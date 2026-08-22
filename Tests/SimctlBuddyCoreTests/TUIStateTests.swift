@@ -48,6 +48,14 @@ final class TUIStateTests: XCTestCase {
       state.actions.contains(TUIActionItem(id: .savedLink(link), title: "↗ Login", hint: "saved")))
   }
 
+  func testAddSavedLinkIsAvailableAsAnAction() {
+    let state = TUIState(devices: devices)
+
+    XCTAssertTrue(
+      state.actions.contains(
+        TUIActionItem(id: .addSavedLink, title: "Add saved deep link", hint: "a")))
+  }
+
   func testRendererShowsPanelsAndSelectedDevice() {
     var state = TUIState(devices: devices)
     state.output = ["✓ Ready"]
@@ -65,5 +73,26 @@ final class TUIStateTests: XCTestCase {
     let screen = TUIRenderer().render(state: TUIState(), columns: 60, rows: 15)
 
     XCTAssertTrue(screen.contains("needs at least 78×18 columns"))
+  }
+
+  func testRendererShowsPromptInCenteredDialog() {
+    var state = TUIState(devices: devices)
+    state.prompt = TUIPrompt(kind: .deepLink, label: "URL")
+
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 30)
+
+    XCTAssertTrue(screen.contains("\u{001B}[11;25H"))
+    XCTAssertTrue(screen.contains("Open deep link"))
+    XCTAssertTrue(screen.contains("Example: myapp://profile/42"))
+  }
+
+  func testRendererShowsSavedLinkURLInDetails() {
+    let link = SavedLink(name: "Login", url: "myapp://login")
+    var state = TUIState(devices: devices, links: [link])
+    state.selectedActionIndex = 2
+
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 30)
+
+    XCTAssertTrue(screen.contains("myapp://login"))
   }
 }

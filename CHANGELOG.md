@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-08-22
+
+- Move text entry from the footer into centered terminal dialogs
+- Add and update saved deep links directly from the interactive UI
+- Show saved-link URLs in the details panel before opening them
+
 ## 0.2.0 - 2026-08-22
 
 - Add a full-screen, three-panel terminal UI inspired by Lazygit

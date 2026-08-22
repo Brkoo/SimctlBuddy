@@ -82,7 +82,9 @@ public final class SimulatorTUI {
     case .text("?"):
       state.showingHelp = true
     case .text("o"):
-      beginPrompt(.deepLink, label: "Deep link")
+      beginPrompt(.deepLink, label: "URL")
+    case .text("a"):
+      beginPrompt(.savedLinkName, label: "Name")
     case .text("b"):
       execute(.boot)
     case .text("x"):
@@ -132,7 +134,9 @@ public final class SimulatorTUI {
     let action = actions[state.selectedActionIndex].id
     switch action {
     case .openDeepLink:
-      beginPrompt(.deepLink, label: "Deep link")
+      beginPrompt(.deepLink, label: "URL")
+    case .addSavedLink:
+      beginPrompt(.savedLinkName, label: "Name")
     case .installApp:
       beginPrompt(.installApp, label: "Path to .app")
     case .launchApp:
@@ -164,6 +168,13 @@ public final class SimulatorTUI {
       performOnBootedDevice { device in
         try client.openURL(value, device: device)
         return "Opened \(value)"
+      }
+    case .savedLinkName:
+      beginPrompt(.savedLinkURL(name: value), label: "URL")
+    case .savedLinkURL(let name):
+      perform {
+        try linkStore.add(name: name, url: value, force: true)
+        refresh(message: "Saved deep link \(name) → \(value)")
       }
     case .installApp:
       performOnBootedDevice { device in
@@ -242,7 +253,8 @@ public final class SimulatorTUI {
       }
     case .refresh:
       refresh(message: "Refreshed devices")
-    case .openDeepLink, .installApp, .launchApp, .terminateApp, .clipboard, .location:
+    case .openDeepLink, .addSavedLink, .installApp, .launchApp, .terminateApp, .clipboard,
+      .location:
       break
     }
   }

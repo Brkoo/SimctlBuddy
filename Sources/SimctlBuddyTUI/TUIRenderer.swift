@@ -62,17 +62,19 @@ public struct TUIRenderer: Sendable {
       lines.append(devices[index] + actions[index] + output[index])
     }
 
-    if let prompt = state.prompt {
-      let available = max(0, columns - prompt.label.count - 5)
-      lines.append(
-        style(" \(prompt.label): ", .boldYellow) + truncate(prompt.value, width: available) + "▌")
-      lines.append(" Enter confirm · Esc cancel · Backspace delete")
+    if state.prompt != nil {
+      lines.append(" " + style("Dialog open", .boldYellow) + " · Enter confirm · Esc cancel")
+      lines.append(" " + style("Type normally · Backspace deletes", .dim))
     } else {
       lines.append(" ↑/k ↓/j navigate · ←/h →/l switch panel · Enter run · o deep link · r refresh")
       lines.append(" q quit · ? help   " + style("Actions target the selected simulator", .dim))
     }
 
-    return "\u{001B}[H" + lines.prefix(rows).joined(separator: "\r\n") + "\u{001B}[J"
+    var screen = "\u{001B}[H" + lines.prefix(rows).joined(separator: "\r\n") + "\u{001B}[J"
+    if let prompt = state.prompt {
+      screen += promptOverlay(prompt: prompt, columns: columns, rows: rows)
+    }
+    return screen
   }
 
   private var helpLines: [String] {
@@ -84,6 +86,7 @@ public struct TUIRenderer: Sendable {
       "Tab           Switch panel",
       "Enter         Run action",
       "o             Open deep link",
+      "a             Add saved deep link",
       "b             Boot selected device",
       "x             Shut down selected device",
       "i             Install .app bundle",
@@ -113,11 +116,82 @@ public struct TUIRenderer: Sendable {
         "",
       ]
     }
+    if case .savedLink(let link) = state.selectedAction?.id {
+      lines += [
+        "Saved deep link",
+        link.name,
+        link.url,
+        "",
+        "Press Enter to open it.",
+        "",
+      ]
+    }
     lines +=
       state.output.isEmpty
       ? ["Choose an action and press Enter.", "Press ? for keyboard help."]
       : state.output
     return lines
+  }
+
+  private func promptOverlay(prompt: TUIPrompt, columns: Int, rows: Int) -> String {
+    let width = min(72, max(50, columns * 2 / 3))
+    let height = 9
+    let inputWidth = width - 6
+    let input: String
+    if prompt.value.isEmpty {
+      input = "▌"
+    } else {
+      let visible = String(prompt.value.suffix(max(1, inputWidth - 1)))
+      input = visible + "▌"
+    }
+
+    let dialog = box(
+      title: promptTitle(for: prompt.kind),
+      width: width,
+      height: height,
+      lines: [
+        "",
+        " \(prompt.label)",
+        " › " + input,
+        " Example: \(promptPlaceholder(for: prompt.kind))",
+        "",
+        " Enter confirm  ·  Esc cancel",
+        "",
+      ],
+      selected: nil,
+      focused: true
+    )
+    let top = max(3, (rows - height) / 2 + 1)
+    let left = max(1, (columns - width) / 2 + 1)
+
+    return dialog.enumerated().map { index, line in
+      "\u{001B}[\(top + index);\(left)H\(line)"
+    }.joined()
+  }
+
+  private func promptTitle(for kind: TUIPromptKind) -> String {
+    switch kind {
+    case .deepLink: return "Open deep link"
+    case .savedLinkName: return "Save deep link · 1 of 2"
+    case .savedLinkURL: return "Save deep link · 2 of 2"
+    case .installApp: return "Install app"
+    case .launchApp: return "Launch app"
+    case .terminateApp: return "Terminate app"
+    case .clipboard: return "Copy to simulator"
+    case .location: return "Set location"
+    }
+  }
+
+  private func promptPlaceholder(for kind: TUIPromptKind) -> String {
+    switch kind {
+    case .deepLink: return "myapp://profile/42"
+    case .savedLinkName: return "login"
+    case .savedLinkURL: return "myapp://login"
+    case .installApp: return "/path/to/MyApp.app"
+    case .launchApp, .terminateApp: return "com.example.MyApp"
+    case .clipboard: return "Text copied into the simulator"
+    case .location: return "46.0569,14.5058"
+    }
   }
 
   private func box(

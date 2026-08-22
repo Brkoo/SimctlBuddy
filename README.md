@@ -74,6 +74,7 @@ help, and `q` to quit. Quick actions include:
 | Key | Action |
 | --- | --- |
 | `o` | Open a deep link |
+| `a` | Add or update a saved deep link |
 | `b` / `x` | Boot or shut down the selected simulator |
 | `i` | Install an `.app` bundle |
 | `L` / `t` | Launch or terminate an app by bundle identifier |
@@ -82,7 +83,9 @@ help, and `q` to quit. Quick actions include:
 | `g` | Set a latitude and longitude |
 | `r` | Refresh devices |
 
-Saved deep-link aliases automatically appear as actions in the middle panel.
+Deep links and other text inputs open in a centered dialog. Saved deep-link
+aliases automatically appear as actions in the middle panel; press `a` to add
+one without leaving the interface. Saving the same name again updates its URL.
 
 ## Command mode
 

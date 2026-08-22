@@ -8,6 +8,7 @@ public enum TUIFocus: Equatable, Sendable {
 
 public enum TUIActionID: Equatable, Sendable {
   case openDeepLink
+  case addSavedLink
   case savedLink(SavedLink)
   case boot
   case shutdown
@@ -38,6 +39,8 @@ public struct TUIActionItem: Equatable, Sendable {
 
 public enum TUIPromptKind: Equatable, Sendable {
   case deepLink
+  case savedLinkName
+  case savedLinkURL(name: String)
   case installApp
   case launchApp
   case terminateApp
@@ -76,9 +79,15 @@ public struct TUIState: Sendable {
     devices.indices.contains(selectedDeviceIndex) ? devices[selectedDeviceIndex] : nil
   }
 
+  public var selectedAction: TUIActionItem? {
+    let items = actions
+    return items.indices.contains(selectedActionIndex) ? items[selectedActionIndex] : nil
+  }
+
   public var actions: [TUIActionItem] {
     var result = [
-      TUIActionItem(id: .openDeepLink, title: "Open deep link", hint: "o")
+      TUIActionItem(id: .openDeepLink, title: "Open deep link", hint: "o"),
+      TUIActionItem(id: .addSavedLink, title: "Add saved deep link", hint: "a"),
     ]
     result += links.map {
       TUIActionItem(id: .savedLink($0), title: "↗ \($0.name)", hint: "saved")
