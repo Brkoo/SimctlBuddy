@@ -1,18 +1,20 @@
 import ArgumentParser
 import Foundation
 import SimctlBuddyCore
+import SimctlBuddyTUI
 
 @main
 struct SimctlBuddy: ParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "simbuddy",
-    abstract: "A friendly command line companion for iOS Simulator.",
+    abstract: "A keyboard-driven terminal control deck for iOS Simulator.",
     discussion: """
-      SimctlBuddy wraps the most useful xcrun simctl workflows with memorable
-      commands, friendly device selection, and reusable deep-link aliases.
+      Run without arguments for the interactive terminal UI. Scriptable commands
+      and reusable deep-link aliases are also available.
       """,
-    version: "0.1.0",
+    version: "0.2.0",
     subcommands: [
+      Interactive.self,
       Devices.self,
       Boot.self,
       Shutdown.self,
@@ -30,8 +32,20 @@ struct SimctlBuddy: ParsableCommand {
       Privacy.self,
       StatusBar.self,
       Doctor.self,
-    ]
+    ],
+    defaultSubcommand: Interactive.self
   )
+}
+
+struct Interactive: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "tui",
+    abstract: "Open the interactive terminal interface."
+  )
+
+  func run() throws {
+    try SimulatorTUI().run()
+  }
 }
 
 struct DeviceOption: ParsableArguments {

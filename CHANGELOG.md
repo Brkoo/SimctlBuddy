@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - 2026-08-22
+
+- Add a full-screen, three-panel terminal UI inspired by Lazygit
+- Make `simbuddy` launch the interactive UI by default
+- Add keyboard navigation, quick actions, prompts, inline help, and live output
+- Keep every existing subcommand available for scripts and automation
+
 ## 0.1.0 - 2026-08-22
 
 - Initial public release

@@ -1,15 +1,26 @@
 # SimctlBuddy
 
-`simbuddy` is a friendly command-line companion for iOS Simulator. It wraps the
-daily `xcrun simctl` workflows in memorable commands and adds reusable deep-link
-aliases for routes you test repeatedly.
+`simbuddy` is a Lazygit-style terminal UI for iOS Simulator. Pick a simulator on
+the left, choose an action in the middle, and see device details or results on
+the right—without remembering `xcrun simctl` commands.
 
 It uses Apple's public `simctl` command—no private frameworks, background daemon,
 or accessibility permissions.
 
+```text
+ SIMCTLBUDDY   iOS Simulator control deck
+┌ Devices ───────────────┐┌ Actions ───────────────┐┌ Details / Output ─────┐
+│● iPhone 17 Pro         ││Open deep link       [o]││iPhone 17 Pro           │
+│○ iPhone 16             ││Boot / show          [b]││iOS 26.0 · Booted       │
+│○ iPad Pro 11-inch      ││Take screenshot      [s]││✓ Deep link opened      │
+└────────────────────────┘└────────────────────────┘└────────────────────────┘
+ ↑/k ↓/j navigate · ←/h →/l switch panel · Enter run · ? help · q quit
+```
+
 ## Highlights
 
-- Find simulators by full name, partial name, or UDID
+- Full-screen, keyboard-driven terminal UI inspired by Lazygit
+- Browse every installed simulator and see its boot state at a glance
 - Boot a sensible default iPhone or target a specific device
 - Open custom URL schemes and universal links
 - Save frequently used deep links under memorable names
@@ -48,7 +59,35 @@ Generate shell completions if desired:
 simbuddy --generate-completion-script zsh > ~/.zfunc/_simbuddy
 ```
 
-## Quick start
+## Interactive terminal UI
+
+Launch it with no arguments:
+
+```bash
+simbuddy
+```
+
+The important keys are shown inside the app. Use arrow keys or `h/j/k/l` to
+navigate, `Tab` to switch panels, `Enter` to run the highlighted action, `?` for
+help, and `q` to quit. Quick actions include:
+
+| Key | Action |
+| --- | --- |
+| `o` | Open a deep link |
+| `b` / `x` | Boot or shut down the selected simulator |
+| `i` | Install an `.app` bundle |
+| `L` / `t` | Launch or terminate an app by bundle identifier |
+| `s` | Take a screenshot |
+| `c` | Copy text into the simulator clipboard |
+| `g` | Set a latitude and longitude |
+| `r` | Refresh devices |
+
+Saved deep-link aliases automatically appear as actions in the middle panel.
+
+## Command mode
+
+The original commands remain available for scripts, shell aliases, and coding
+agents:
 
 ```bash
 # See available devices
@@ -137,7 +176,9 @@ simbuddy devices --booted
 simbuddy devices --json
 ```
 
-Run `simbuddy help <command>` for every option and example accepted by a command.
+Run `simbuddy --help` for the complete command list and
+`simbuddy help <command>` for every option accepted by a command. You can also
+launch the terminal UI explicitly with `simbuddy tui`.
 
 ## Device selection
 
@@ -166,8 +207,8 @@ swift run simbuddy --help
 swift run simbuddy doctor
 ```
 
-The project separates command execution and device-selection logic into
-`SimctlBuddyCore`, keeping the behavior independently testable.
+The project separates simulator operations, terminal rendering, and command
+parsing into independently testable modules.
 
 ## Contributing
 

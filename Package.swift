@@ -15,16 +15,21 @@ let package = Package(
   ],
   targets: [
     .target(name: "SimctlBuddyCore"),
+    .target(
+      name: "SimctlBuddyTUI",
+      dependencies: ["SimctlBuddyCore"]
+    ),
     .executableTarget(
       name: "SimctlBuddyCLI",
       dependencies: [
         "SimctlBuddyCore",
+        "SimctlBuddyTUI",
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
       ]
     ),
     .testTarget(
       name: "SimctlBuddyCoreTests",
-      dependencies: ["SimctlBuddyCore"]
+      dependencies: ["SimctlBuddyCore", "SimctlBuddyTUI"]
     ),
   ]
 )
