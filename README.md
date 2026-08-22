@@ -75,6 +75,7 @@ help, and `q` to quit. Quick actions include:
 | --- | --- |
 | `o` | Open a deep link |
 | `a` | Add or update a saved deep link |
+| `e` | Edit the highlighted saved link |
 | `b` / `x` | Boot or shut down the selected simulator |
 | `i` | Install an `.app` bundle |
 | `L` / `t` | Launch or terminate an app by bundle identifier |
@@ -85,7 +86,8 @@ help, and `q` to quit. Quick actions include:
 
 Deep links and other text inputs open in a centered dialog. Saved deep-link
 aliases automatically appear as actions in the middle panel; press `a` to add
-one without leaving the interface. Saving the same name again updates its URL.
+one without leaving the interface. Highlight a saved link and press `e` to edit
+its current URL. The edit dialog is prefilled; press `Ctrl+U` to clear it quickly.
 
 ## Command mode
 

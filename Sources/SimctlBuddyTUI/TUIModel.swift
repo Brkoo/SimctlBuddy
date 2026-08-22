@@ -41,6 +41,7 @@ public enum TUIPromptKind: Equatable, Sendable {
   case deepLink
   case savedLinkName
   case savedLinkURL(name: String)
+  case editSavedLinkURL(name: String)
   case installApp
   case launchApp
   case terminateApp
@@ -90,7 +91,7 @@ public struct TUIState: Sendable {
       TUIActionItem(id: .addSavedLink, title: "Add saved deep link", hint: "a"),
     ]
     result += links.map {
-      TUIActionItem(id: .savedLink($0), title: "↗ \($0.name)", hint: "saved")
+      TUIActionItem(id: .savedLink($0), title: "↗ \($0.name)", hint: "↵/e")
     }
     result += [
       TUIActionItem(id: .boot, title: "Boot / show simulator", hint: "b"),

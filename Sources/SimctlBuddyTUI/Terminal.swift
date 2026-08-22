@@ -10,6 +10,7 @@ enum TerminalKey: Equatable {
   case escape
   case tab
   case backspace
+  case clearLine
   case text(String)
 }
 
@@ -98,6 +99,7 @@ final class TerminalSession {
     case 10, 13: return .enter
     case 27: return .escape
     case 8, 127: return .backspace
+    case 21: return .clearLine
     default:
       let printable = input.filter { $0 >= 32 || $0 >= 128 }
       guard !printable.isEmpty else { return nil }

@@ -45,7 +45,7 @@ final class TUIStateTests: XCTestCase {
     let state = TUIState(devices: devices, links: [link])
 
     XCTAssertTrue(
-      state.actions.contains(TUIActionItem(id: .savedLink(link), title: "↗ Login", hint: "saved")))
+      state.actions.contains(TUIActionItem(id: .savedLink(link), title: "↗ Login", hint: "↵/e")))
   }
 
   func testAddSavedLinkIsAvailableAsAnAction() {
@@ -94,5 +94,21 @@ final class TUIStateTests: XCTestCase {
     let screen = TUIRenderer().render(state: state, columns: 120, rows: 30)
 
     XCTAssertTrue(screen.contains("myapp://login"))
+    XCTAssertTrue(screen.contains("Press e to edit its URL."))
+  }
+
+  func testRendererShowsPrefilledEditDialog() {
+    var state = TUIState(devices: devices)
+    state.prompt = TUIPrompt(
+      kind: .editSavedLinkURL(name: "Login"),
+      label: "URL",
+      value: "myapp://login"
+    )
+
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 30)
+
+    XCTAssertTrue(screen.contains("Edit saved deep link"))
+    XCTAssertTrue(screen.contains("› myapp://login▌"))
+    XCTAssertTrue(screen.contains("Ctrl+U clear"))
   }
 }

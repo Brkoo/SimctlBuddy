@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-08-22
+
+- Add an explicit `e` shortcut for editing the highlighted saved deep link
+- Prefill the edit dialog with the current URL
+- Add `Ctrl+U` to clear text fields quickly
+
 ## 0.2.1 - 2026-08-22
 
 - Move text entry from the footer into centered terminal dialogs

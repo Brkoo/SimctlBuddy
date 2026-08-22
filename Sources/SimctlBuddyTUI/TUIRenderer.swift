@@ -64,7 +64,7 @@ public struct TUIRenderer: Sendable {
 
     if state.prompt != nil {
       lines.append(" " + style("Dialog open", .boldYellow) + " · Enter confirm · Esc cancel")
-      lines.append(" " + style("Type normally · Backspace deletes", .dim))
+      lines.append(" " + style("Type normally · Backspace deletes · Ctrl+U clears", .dim))
     } else {
       lines.append(" ↑/k ↓/j navigate · ←/h →/l switch panel · Enter run · o deep link · r refresh")
       lines.append(" q quit · ? help   " + style("Actions target the selected simulator", .dim))
@@ -87,6 +87,7 @@ public struct TUIRenderer: Sendable {
       "Enter         Run action",
       "o             Open deep link",
       "a             Add saved deep link",
+      "e             Edit highlighted saved link",
       "b             Boot selected device",
       "x             Shut down selected device",
       "i             Install .app bundle",
@@ -123,6 +124,7 @@ public struct TUIRenderer: Sendable {
         link.url,
         "",
         "Press Enter to open it.",
+        "Press e to edit its URL.",
         "",
       ]
     }
@@ -155,7 +157,7 @@ public struct TUIRenderer: Sendable {
         " › " + input,
         " Example: \(promptPlaceholder(for: prompt.kind))",
         "",
-        " Enter confirm  ·  Esc cancel",
+        " Enter confirm  ·  Ctrl+U clear  ·  Esc cancel",
         "",
       ],
       selected: nil,
@@ -174,6 +176,7 @@ public struct TUIRenderer: Sendable {
     case .deepLink: return "Open deep link"
     case .savedLinkName: return "Save deep link · 1 of 2"
     case .savedLinkURL: return "Save deep link · 2 of 2"
+    case .editSavedLinkURL: return "Edit saved deep link"
     case .installApp: return "Install app"
     case .launchApp: return "Launch app"
     case .terminateApp: return "Terminate app"
@@ -186,7 +189,7 @@ public struct TUIRenderer: Sendable {
     switch kind {
     case .deepLink: return "myapp://profile/42"
     case .savedLinkName: return "login"
-    case .savedLinkURL: return "myapp://login"
+    case .savedLinkURL, .editSavedLinkURL: return "myapp://login"
     case .installApp: return "/path/to/MyApp.app"
     case .launchApp, .terminateApp: return "com.example.MyApp"
     case .clipboard: return "Text copied into the simulator"

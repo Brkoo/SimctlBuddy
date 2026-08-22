@@ -85,6 +85,8 @@ public final class SimulatorTUI {
       beginPrompt(.deepLink, label: "URL")
     case .text("a"):
       beginPrompt(.savedLinkName, label: "Name")
+    case .text("e"):
+      editSelectedSavedLink()
     case .text("b"):
       execute(.boot)
     case .text("x"):
@@ -103,7 +105,7 @@ public final class SimulatorTUI {
       beginPrompt(.location, label: "Latitude,longitude")
     case .text("r"):
       execute(.refresh)
-    case .escape, .backspace, .text:
+    case .escape, .backspace, .clearLine, .text:
       break
     }
   }
@@ -119,6 +121,9 @@ public final class SimulatorTUI {
       submit(prompt)
     case .backspace:
       if !prompt.value.isEmpty { prompt.value.removeLast() }
+      state.prompt = prompt
+    case .clearLine:
+      prompt.value = ""
       state.prompt = prompt
     case .text(let value):
       prompt.value.append(value)
@@ -152,8 +157,16 @@ public final class SimulatorTUI {
     }
   }
 
-  private func beginPrompt(_ kind: TUIPromptKind, label: String) {
-    state.prompt = TUIPrompt(kind: kind, label: label)
+  private func beginPrompt(_ kind: TUIPromptKind, label: String, value: String = "") {
+    state.prompt = TUIPrompt(kind: kind, label: label, value: value)
+  }
+
+  private func editSelectedSavedLink() {
+    guard case .savedLink(let link) = state.selectedAction?.id else {
+      appendOutput("Select a saved deep link, then press e to edit it", error: true)
+      return
+    }
+    beginPrompt(.editSavedLinkURL(name: link.name), label: "URL", value: link.url)
   }
 
   private func submit(_ prompt: TUIPrompt) {
@@ -171,7 +184,7 @@ public final class SimulatorTUI {
       }
     case .savedLinkName:
       beginPrompt(.savedLinkURL(name: value), label: "URL")
-    case .savedLinkURL(let name):
+    case .savedLinkURL(let name), .editSavedLinkURL(let name):
       perform {
         try linkStore.add(name: name, url: value, force: true)
         refresh(message: "Saved deep link \(name) → \(value)")
