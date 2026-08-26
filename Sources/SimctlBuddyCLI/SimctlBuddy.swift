@@ -24,6 +24,7 @@ struct SimctlBuddy: ParsableCommand {
       Launch.self,
       Terminate.self,
       Apps.self,
+      Bundles.self,
       Screenshot.self,
       Clipboard.self,
       Push.self,
@@ -308,6 +309,62 @@ struct Apps: ParsableCommand {
   }
 }
 
+struct Bundles: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Save and reuse app bundle identifiers.",
+    subcommands: [BundlesList.self, BundlesAdd.self, BundlesRemove.self],
+    defaultSubcommand: BundlesList.self
+  )
+}
+
+struct BundlesList: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "list", abstract: "List saved app bundle identifiers.")
+
+  func run() throws {
+    let apps = try AppStore().load()
+    guard !apps.isEmpty else {
+      print("No saved apps yet. Add one with `simbuddy bundles add <name> <bundle-id>`.")
+      return
+    }
+    let width = apps.map(\.name.count).max() ?? 0
+    for app in apps {
+      let name = app.name.padding(toLength: width, withPad: " ", startingAt: 0)
+      print("\(name)  \(app.bundleIdentifier)")
+    }
+  }
+}
+
+struct BundlesAdd: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "add", abstract: "Save an app bundle identifier under a name.")
+
+  @Argument(help: "Short name to remember the app by.")
+  var name: String
+  @Argument(help: "App bundle identifier.")
+  var bundleIdentifier: String
+  @Flag(help: "Replace an existing saved app with the same name.")
+  var force = false
+
+  func run() throws {
+    try AppStore().add(name: name, bundleIdentifier: bundleIdentifier, force: force)
+    printSuccess("Saved app \(name) → \(bundleIdentifier)")
+  }
+}
+
+struct BundlesRemove: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "remove", abstract: "Remove a saved app.")
+
+  @Argument(help: "Saved app name.")
+  var name: String
+
+  func run() throws {
+    try AppStore().remove(name: name)
+    printSuccess("Removed saved app \(name)")
+  }
+}
+
 struct Screenshot: ParsableCommand {
   static let configuration = CommandConfiguration(abstract: "Capture a simulator screenshot.")
 
@@ -569,30 +626,8 @@ struct Doctor: ParsableCommand {
     abstract: "Check the local Xcode and Simulator setup.")
 
   func run() throws {
-    let runner = ProcessRunner()
-    let developerDir = try runner.run(executable: "/usr/bin/xcode-select", arguments: ["-p"])
-    guard developerDir.exitCode == 0 else {
-      throw ValidationError(
-        "Xcode command-line tools are not selected. Run `sudo xcode-select -s /Applications/Xcode.app`."
-      )
-    }
-    printSuccess(
-      "Developer directory: \(developerDir.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))"
-    )
-
-    let version = try runner.run(executable: "/usr/bin/xcrun", arguments: ["simctl", "help"])
-    guard version.exitCode == 0 else {
-      throw ValidationError(
-        "xcrun could not start simctl. Open Xcode once and finish installing components.")
-    }
-    printSuccess("simctl is available")
-
-    let devices = try SimctlClient().devices()
-    printSuccess("Found \(devices.count) available simulator\(devices.count == 1 ? "" : "s")")
-    if let booted = devices.first(where: \.isBooted) {
-      printSuccess("Booted: \(booted.name) [\(booted.runtimeName)]")
-    } else {
-      print("• No simulator is currently booted")
+    for line in try SimctlClient().diagnostics() {
+      printSuccess(line)
     }
   }
 }

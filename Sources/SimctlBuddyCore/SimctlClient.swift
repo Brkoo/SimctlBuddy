@@ -124,6 +124,62 @@ public struct SimctlClient: Sendable {
     }
   }
 
+  /// Checks the local Xcode and Simulator setup, returning one line per check.
+  /// Shared by the `doctor` command and the interactive interface.
+  public func diagnostics() throws -> [String] {
+    let developerDir = try runner.run(executable: "/usr/bin/xcode-select", arguments: ["-p"])
+    guard developerDir.exitCode == 0 else {
+      throw SimctlBuddyError.setupProblem(
+        "Xcode command-line tools are not selected. Run `sudo xcode-select -s /Applications/Xcode.app`."
+      )
+    }
+    var lines = [
+      "Developer directory: "
+        + developerDir.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    ]
+
+    let help = try runner.run(executable: xcrunPath, arguments: ["simctl", "help"])
+    guard help.exitCode == 0 else {
+      throw SimctlBuddyError.setupProblem(
+        "xcrun could not start simctl. Open Xcode once and finish installing components.")
+    }
+    lines.append("simctl is available")
+
+    let available = try devices()
+    lines.append("Found \(available.count) available simulator\(available.count == 1 ? "" : "s")")
+    if let booted = available.first(where: \.isBooted) {
+      lines.append("Booted: \(booted.name) [\(booted.runtimeName)]")
+    } else {
+      lines.append("No simulator is currently booted")
+    }
+    return lines
+  }
+
+  /// Bundle identifiers of the apps installed on a device, sorted for display.
+  public func installedBundleIdentifiers(device: SimulatorDevice) throws -> [String] {
+    let output = try simctl(["listapps", device.udid])
+    var identifiers = Set<String>()
+    for line in output.split(separator: "\n") {
+      guard line.contains("CFBundleIdentifier") else { continue }
+      let parts = line.split(separator: "=", maxSplits: 1)
+      guard parts.count == 2 else { continue }
+      let value = parts[1]
+        .trimmingCharacters(in: .whitespaces)
+        .trimmingCharacters(in: CharacterSet(charactersIn: ";\""))
+      if !value.isEmpty { identifiers.insert(value) }
+    }
+    return identifiers.sorted()
+  }
+
+  public func validateFile(at path: String) throws -> String {
+    let expanded = NSString(string: path).expandingTildeInPath
+    let absolute = URL(fileURLWithPath: expanded).standardizedFileURL.path
+    guard FileManager.default.fileExists(atPath: absolute) else {
+      throw SimctlBuddyError.missingFile(absolute)
+    }
+    return absolute
+  }
+
   public func validateAppBundle(at path: String) throws -> String {
     let expanded = NSString(string: path).expandingTildeInPath
     let absolute = URL(fileURLWithPath: expanded).standardizedFileURL.path

@@ -11,6 +11,11 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
   case invalidAppBundle(String)
   case linkNotFound(String)
   case duplicateLink(String)
+  case appNotFound(String)
+  case duplicateApp(String)
+  case invalidBundleIdentifier(String)
+  case setupProblem(String)
+  case missingFile(String)
 
   public var errorDescription: String? {
     switch self {
@@ -38,6 +43,17 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
       return "No saved link named “\(name)”. Run `simbuddy links list` to see saved links."
     case .duplicateLink(let name):
       return "A saved link named “\(name)” already exists. Pass --force to replace it."
+    case .appNotFound(let name):
+      return "No saved app named “\(name)”. Run `simbuddy bundles list` to see saved apps."
+    case .duplicateApp(let name):
+      return "A saved app named “\(name)” already exists. Pass --force to replace it."
+    case .invalidBundleIdentifier(let value):
+      return
+        "“\(value)” is not a valid bundle identifier. Use reverse-DNS form, for example com.example.MyApp."
+    case .setupProblem(let message):
+      return message
+    case .missingFile(let path):
+      return "No file exists at \(path)."
     }
   }
 }
