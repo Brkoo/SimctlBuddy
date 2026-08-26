@@ -1,55 +1,67 @@
+<div align="center">
+
 # SimctlBuddy
 
-`simbuddy` is a Lazygit-style terminal UI for iOS Simulator. Pick a simulator on
-the left, choose an action in the middle, and see device details or results on
-the right—without remembering `xcrun simctl` commands.
+**A Lazygit-style terminal UI for the iOS Simulator.**
 
-It uses Apple's public `simctl` command—no private frameworks, background daemon,
-or accessibility permissions.
+Pick a simulator, choose an action, watch it happen — without remembering a single
+`xcrun simctl` incantation.
+
+[![CI](https://github.com/Brkoo/SimctlBuddy/actions/workflows/ci.yml/badge.svg)](https://github.com/Brkoo/SimctlBuddy/actions/workflows/ci.yml)
+[![Swift 6.0](https://img.shields.io/badge/Swift-6.0-orange.svg)](https://swift.org)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue.svg)](https://www.apple.com/macos/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+</div>
 
 ```text
  SIMCTLBUDDY  ·  iOS Simulator control deck
- ● iPhone 17 Pro  iOS 26.5  Booted                     2 booted · 9 total
+ ● iPhone 17 Pro  iOS 26.5  Booted                    normal · 2 booted · 9 total
 ┌ Devices 9 ─────────────┐┌ Actions ───────────────┐┌ Activity ──────────────┐
-│● iPhone 17 Pro  iOS 26…││LINKS ──────────────────││✓ Opened Purchase popup │
-│○ iPhone 16  iOS 26.0   ││ Open deep link  [o]    ││  → myapp://purchase    │
-│○ iPad Pro 11  iOS 26.5 ││ ↗ Purchase popup  [↵/e]││✓ Screenshot saved      │
-└────────────────────────┘│DEVICE ─────────────────││✗ iPhone 16 is shut     │
-┌ Details ───────────────┐│ Boot / show  [b]       ││  down. Boot it first.  │
-│iPhone 17 Pro           ││ Shut down  [x]         ││                        │
-│● Booted                ││CAPTURE ────────────────││                        │
-│↗ myapp://purchase      ││ Take screenshot  [s]   ││                        │
+│● iPhone 17 Pro  iOS 26…││LINKS ──────────────────││⠹ Booting iPhone 16…    │
+│○ iPhone 16  iOS 26.0   ││ Open deep link  [o]    ││                        │
+│○ iPad Pro 11  iOS 26.5 ││ ↗ Purchase popup [↵/e…]││✓ Opened Purchase popup │
+└────────────────────────┘│SAVED APPS ─────────────││  → myapp://purchase    │
+┌ Details ───────────────┐│ ▶ Checkout     [↵/e/d] ││✓ Screenshot saved      │
+│iPhone 17 Pro           ││DEVICE ─────────────────││✗ iPhone 16 is shut     │
+│● Booted                ││ Boot / show      [b]   ││  down. Boot it first.  │
+│↗ myapp://purchase      ││ Shut down        [x]   ││                        │
 └────────────────────────┘└────────────────────────┘└────────────────────────┘
- ↑/k ↓/j move · ←/h →/l panel · Enter run · +/- size · o link · r refresh
+ ↑/k ↓/j move · ←/h →/l panel · Enter run · / filter · +/- size · o link
  q quit · ? help   Actions target the selected simulator
 ```
 
-## Highlights
+## Contents
 
-- Full-screen, keyboard-driven terminal UI inspired by Lazygit
-- Grow the focused panel with `+` and shrink it with `-` (normal, half, full)
-- Filter simulators and saved deep links with `/`
-- Long commands run in the background with a spinner instead of freezing
-- Browse every installed simulator and see its boot state at a glance
-- Boot a sensible default iPhone or target a specific device
-- Open custom URL schemes and universal links
-- Save frequently used deep links under memorable names
-- Pick app bundle identifiers from the apps installed on the simulator
-- Save bundle identifiers under names and launch them with one key
-- Install, launch, restart, terminate, and list apps
-- Capture screenshots and create clean status bars
-- Copy text to and read text from the simulator clipboard
-- Send APNs payloads, change location and appearance, and manage privacy grants
-- Produce JSON device output for scripts and coding agents
-- Run `doctor` for actionable Xcode and Simulator diagnostics
+- [Why](#why)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [The interactive UI](#the-interactive-ui)
+- [Scripting](#scripting)
+- [Where things are stored](#where-things-are-stored)
+- [Requirements](#requirements)
+- [Development](#development)
 
-## Requirements
+## Why
 
-- macOS 13 or newer
-- Xcode with at least one iOS Simulator runtime
-- Swift 6.0 or newer when building from source
+`xcrun simctl` is powerful and completely unmemorable. Booting a device means
+copying a UDID; opening a deep link means retyping the same URL for the fiftieth
+time; sending a push means remembering the payload flag order.
 
-## Install from source
+SimctlBuddy puts all of it behind a keyboard-driven interface, and remembers the
+things you use repeatedly — deep links and app bundle identifiers — under names
+you choose.
+
+It shells out to Apple's public `simctl`. No private frameworks, no background
+daemon, no accessibility permissions.
+
+**Two ways in, on purpose.** The terminal UI is for working by hand. The
+subcommands are for scripts, shell aliases, CI, and coding agents — a terminal UI
+cannot be piped into `jq`. Both reach the same features.
+
+## Install
+
+Build from source:
 
 ```bash
 git clone https://github.com/Brkoo/SimctlBuddy.git
@@ -59,120 +71,152 @@ install -d ~/.local/bin
 install .build/release/simbuddy ~/.local/bin/simbuddy
 ```
 
-Ensure `~/.local/bin` is on your `PATH`. For zsh:
+Make sure `~/.local/bin` is on your `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ```
 
-Generate shell completions if desired:
+Shell completions are optional:
 
 ```bash
 simbuddy --generate-completion-script zsh > ~/.zfunc/_simbuddy
 ```
 
-## Interactive terminal UI
-
-Launch it with no arguments:
+## Quick start
 
 ```bash
 simbuddy
 ```
 
-The important keys are shown inside the app. Use arrow keys or `h/j/k/l` to
-navigate, `Tab` to switch panels, `Enter` to run the highlighted action, `?` for
-help, and `q` to quit. Quick actions include:
+That opens the UI. Move with `↑`/`↓`, switch panels with `Tab`, run the
+highlighted action with `Enter`, and quit with `q`. Press `?` at any time for the
+full key list.
+
+If something looks wrong with your Xcode setup, run the diagnostics first:
+
+```bash
+simbuddy doctor
+```
+
+## The interactive UI
+
+Three panels: simulators on the left over a details card, actions in the middle,
+results on the right. Actions always target the highlighted simulator.
+
+### Keys
 
 | Key | Action |
 | --- | --- |
-| `o` | Open a deep link |
-| `a` | Add or update a saved deep link |
-| `e` | Edit the highlighted saved link |
-| `b` / `x` | Boot or shut down the selected simulator |
-| `i` | Install an `.app` bundle |
-| `s` | Take a screenshot |
-| `c` | Copy text into the simulator clipboard |
-| `g` | Set a latitude and longitude |
-| `r` | Refresh devices |
-| `p` | Send a push notification |
-| `L` / `t` | Launch or terminate — pick the app from a list |
-| `v` | Read the simulator clipboard |
-| `d` | Delete the highlighted saved link |
-| `+` / `-` | Grow or shrink the focused panel |
+| `↑` `↓` / `k` `j` | Move the selection |
+| `←` `→` / `h` `l` / `Tab` | Switch panel |
+| `Enter` | Run the highlighted action |
 | `/` | Filter the focused panel |
-| `Ctrl+C` | Quit |
+| `+` `-` | Grow or shrink the focused panel |
+| `?` | Toggle help |
+| `q` / `Ctrl+C` | Quit |
+| `o` | Open a deep link |
+| `a` | Save a deep link |
+| `e` | Edit the highlighted saved link or app |
+| `d` | Delete the highlighted saved link or app |
+| `b` / `x` | Boot or shut down the simulator |
+| `i` | Install an `.app` bundle |
+| `L` / `t` | Launch or terminate an app |
+| `p` | Send a push notification |
+| `s` | Take a screenshot |
+| `c` / `v` | Copy text to, or read text from, the simulator clipboard |
+| `g` | Set a location |
+| `r` | Refresh devices |
 
-Actions that need an app no longer ask you to remember a bundle identifier.
+### Picking apps instead of typing identifiers
+
 Launch, terminate, push, and the privacy actions open a searchable list of the
-apps installed on the selected simulator, with your saved apps at the top. Type
-to narrow it, `Enter` to choose, or `Tab` to type an identifier by hand for an
-app that is not installed yet.
+apps installed on the selected simulator, with your saved apps at the top:
 
-Choose **Save app bundle ID** to remember an app under a short name. Saved apps
-appear in their own section: `Enter` launches one, `e` edits its identifier, and
-`d` deletes it. They are stored in `~/.config/simbuddy/apps.json` and are also
-available from the command line:
-
-```bash
-simbuddy bundles add checkout com.example.Checkout
-simbuddy bundles list
-simbuddy bundles remove checkout
+```text
+┌ Launch app ───────────────────────────────────────┐
+│ /mobile▌                                          │
+│                                                   │
+│❯ Checkout  com.example.Checkout                   │
+│  com.apple.MobileSMS  installed                   │
+│  com.apple.mobilecal  installed                   │
+│                                                   │
+│ ↑/↓ move · Enter choose · Tab type it · Esc cancel│
+└───────────────────────────────────────────────────┘
 ```
 
-Press `/` to filter the focused panel. Filtering the device list matches on name
-and runtime, so `/mini` or `/18.6` both narrow it. Filtering the actions panel
-matches action titles and saved deep-link URLs, so `/bills` finds the link that
-points at `myapp://navigate/bills`. `Enter` keeps the filter, `Esc` clears it,
-`Ctrl+U` wipes the query, and `Tab` commits it and moves to the other panel.
-Each panel remembers its own filter, and the panel title shows the match count.
+Type to narrow the list, `Enter` to choose. `Tab` switches to typing an
+identifier by hand, for an app that is not installed yet.
 
-Long-running commands such as booting a simulator or installing an app run in
-the background with a spinner in the activity panel, so the interface stays
-responsive and you can keep navigating while they finish.
+### Saving links and apps
 
-Press `+` to give the focused panel more room and `-` to give it back, cycling
-through three screen modes like Lazygit: `normal` splits the window three ways,
-`half` gives the focused panel half the width, and `full` hands it the whole
-window. The status bar shows which mode is active. Note that `full` hides the
-activity panel, so switch back to see command output.
+Deep links and bundle identifiers you use repeatedly get names and their own
+sections in the actions panel.
 
-Deep links and other text inputs open in a centered dialog. Saved deep-link
-aliases automatically appear as actions in the middle panel; press `a` to add
-one without leaving the interface. Highlight a saved link and press `e` to edit
-its current URL. The edit dialog is prefilled; press `Ctrl+U` to clear it quickly.
+- Press `a` to save a deep link, then `Enter` on it to open it.
+- Choose **Save app bundle ID** to name an app, then `Enter` on it to launch it.
+- On either, `e` edits and `d` deletes. Deletions ask first.
 
-## Command mode
+### Filtering
 
-Everything the command line can do is also reachable from the interactive UI,
-including push notifications, privacy permissions, and diagnostics. The command
-line remains the way to script SimctlBuddy — a terminal interface cannot be piped
-into `jq` or run from CI.
+Press `/` to filter the focused panel. Simulators match on name and runtime, so
+`/mini` and `/18.6` both narrow the list. Actions match on title, deep-link URL,
+and bundle identifier, so `/bills` finds the link pointing at
+`myapp://navigate/bills`.
 
-The original commands remain available for scripts, shell aliases, and coding
-agents:
+`Enter` keeps the filter, `Esc` clears it, `Ctrl+U` wipes the query, and `Tab`
+commits it and moves to the other panel. Each panel remembers its own filter, and
+the panel title shows the match count.
+
+### Screen modes
+
+`+` gives the focused panel more room and `-` gives it back, cycling three modes
+like Lazygit:
+
+| Mode | Layout |
+| --- | --- |
+| `normal` | Three columns |
+| `half` | Focused panel takes half the width |
+| `full` | Focused panel takes the whole window |
+
+The status bar shows the active mode. `full` hides the activity panel, so switch
+back to see command output.
+
+### Nothing blocks
+
+Booting a simulator or installing an app runs in the background with a spinner in
+the activity panel. The interface stays responsive and you can keep navigating
+while it finishes.
+
+## Scripting
+
+Every subcommand defaults to the only booted simulator. Pass `--device` (`-d`)
+with a name, partial name, or UDID to target a specific one. Partial names are
+accepted when they identify exactly one device; ambiguous matches list the
+candidates rather than guessing.
+
+### Devices
 
 ```bash
-# See available devices
 simbuddy devices
+simbuddy devices --booted
+simbuddy devices --json
+simbuddy boot                 # a sensible default iPhone
+simbuddy boot "17 Pro"        # or a partial name
+simbuddy shutdown
+```
 
-# Boot a sensible default, or choose by partial name
-simbuddy boot
-simbuddy boot "17 Pro"
+### Deep links
 
-# Open a deep link on the booted simulator
+```bash
 simbuddy open 'myapp://profile/42?source=terminal'
+simbuddy open 'myapp://debug' --device 'iPhone 17 Pro'
 
-# Save routes you use frequently
 simbuddy links add login 'myapp://login?mode=test'
-simbuddy links add checkout 'myapp://checkout'
 simbuddy links run login
 simbuddy links list
-
-# Target a particular booted simulator when needed
-simbuddy open 'myapp://debug' --device 'iPhone 17 Pro'
+simbuddy links remove login
 ```
-
-## Everyday commands
 
 ### Apps
 
@@ -181,7 +225,11 @@ simbuddy install ./Build/MyApp.app
 simbuddy launch com.example.MyApp
 simbuddy launch com.example.MyApp --restart -- --uitesting --skip-onboarding
 simbuddy terminate com.example.MyApp
-simbuddy apps
+simbuddy apps                 # installed apps, as JSON
+
+simbuddy bundles add checkout com.example.Checkout
+simbuddy bundles list
+simbuddy bundles remove checkout
 ```
 
 Arguments after `--` in `launch` are forwarded to the app.
@@ -189,7 +237,7 @@ Arguments after `--` in `launch` are forwarded to the app.
 ### Screenshots and status bar
 
 ```bash
-simbuddy statusbar clean
+simbuddy statusbar clean      # 9:41, full bars, full battery
 simbuddy screenshot screenshots/login.png
 simbuddy statusbar clear
 ```
@@ -206,8 +254,6 @@ simbuddy clipboard paste
 ```bash
 simbuddy push com.example.MyApp ./Fixtures/message.apns
 ```
-
-An example payload:
 
 ```json
 {
@@ -230,52 +276,59 @@ simbuddy privacy revoke photos com.example.MyApp
 simbuddy privacy reset --service camera com.example.MyApp
 ```
 
-### Diagnostics and scripting
+### Diagnostics
 
 ```bash
 simbuddy doctor
-simbuddy devices --booted
-simbuddy devices --json
 ```
 
-Run `simbuddy --help` for the complete command list and
-`simbuddy help <command>` for every option accepted by a command. You can also
-launch the terminal UI explicitly with `simbuddy tui`.
+Run `simbuddy --help` for the full command list, or `simbuddy help <command>` for
+one command's options. `simbuddy tui` opens the interactive UI explicitly.
 
-## Device selection
+## Where things are stored
 
-Commands default to the only booted simulator. Pass `--device` (`-d`) when more
-than one simulator is booted or when you want a specific target:
+| Path | Contents |
+| --- | --- |
+| `~/.config/simbuddy/links.json` | Saved deep links |
+| `~/.config/simbuddy/apps.json` | Saved app bundle identifiers |
 
-```bash
-simbuddy screenshot -d 'iPhone 17 Pro'
-simbuddy screenshot -d AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE
-```
+Both are plain JSON, safe to edit, commit, or sync.
 
-Partial names are accepted when they identify exactly one device. Ambiguous
-matches produce a list rather than silently choosing the wrong simulator.
+## Requirements
 
-## Safety
-
-SimctlBuddy intentionally does not include simulator deletion or erase commands
-in its first release. Commands that change app data or privacy settings always
-require an explicit bundle identifier.
+- macOS 13 or newer
+- Xcode with at least one iOS Simulator runtime
+- Swift 6.0 or newer to build from source
+- A terminal at least 78×18
 
 ## Development
 
 ```bash
+swift build
 swift test
-swift run simbuddy --help
 swift run simbuddy doctor
 ```
 
-The project separates simulator operations, terminal rendering, and command
-parsing into independently testable modules.
+Simulator operations, terminal rendering, and command parsing live in separate
+modules so each is testable on its own:
+
+| Module | Responsibility |
+| --- | --- |
+| `SimctlBuddyCore` | `simctl` calls, device resolution, saved-link and saved-app stores |
+| `SimctlBuddyTUI` | Terminal handling, interface state, rendering |
+| `SimctlBuddyCLI` | Command and argument parsing |
+
+### Safety
+
+SimctlBuddy deliberately ships no simulator deletion or erase command. Actions
+that change app data or privacy settings always require an explicit bundle
+identifier.
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-SimctlBuddy is available under the [MIT License](LICENSE).
+MIT. See [LICENSE](LICENSE).
