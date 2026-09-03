@@ -16,6 +16,26 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
   case invalidBundleIdentifier(String)
   case setupProblem(String)
   case missingFile(String)
+  case notADirectory(String)
+  case cannotCreateDirectory(String, reason: String)
+  case notAnAppBundlePath(String)
+  case pathNotFound(String)
+  case duplicatePath(String)
+  case recordingAlreadyRunning(String)
+  case noRecordingRunning
+  case recordingFailed(String)
+  case invalidImportFile(String)
+  case missingLinkScheme
+  case missingLinkParameter(String)
+  case appHasNoScheme(String)
+  case noSchemeForLink(String)
+  case invalidScheme(String)
+  case invalidAssignment(String)
+  case appNotInstalled(String, device: String)
+  case appNotRunning(String, device: String)
+  case unsupportedAction(DeviceCapability, kind: DeviceKind)
+  case devicectlUnavailable
+  case wrongBuildForDevice(name: String, kind: DeviceKind, hint: String)
 
   public var errorDescription: String? {
     switch self {
@@ -24,7 +44,8 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
     case .invalidResponse(let message):
       return "Could not understand simctl output: \(message)"
     case .noBootedDevice:
-      return "No iOS Simulator is booted. Run `simbuddy boot` first."
+      return
+        "Nothing is ready to act on. Boot a simulator with `simbuddy boot`, or pass --device."
     case .deviceNotFound(let selector):
       return
         "No available simulator matched “\(selector)”. Run `simbuddy devices` to see your options."
@@ -54,6 +75,51 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
       return message
     case .missingFile(let path):
       return "No file exists at \(path)."
+    case .notADirectory(let path):
+      return "\(path) already exists and is not a directory."
+    case .cannotCreateDirectory(let path, let reason):
+      return "Could not create \(path): \(reason)"
+    case .notAnAppBundlePath(let path):
+      return "\(path) does not end in .app. Saved paths point at a built app bundle."
+    case .pathNotFound(let name):
+      return "No saved path named \u{201C}\(name)\u{201D}. Run `simbuddy paths list` to see saved paths."
+    case .duplicatePath(let name):
+      return "A saved path named \u{201C}\(name)\u{201D} already exists. Pass --force to replace it."
+    case .recordingAlreadyRunning(let path):
+      return "A recording is already running, writing to \(path). Stop it before starting another."
+    case .noRecordingRunning:
+      return "No recording is running."
+    case .recordingFailed(let message):
+      return "Recording failed: \(message)"
+    case .invalidImportFile(let message):
+      return "Could not read that deep-link file: \(message)"
+    case .missingLinkScheme:
+      return
+        "This link uses $scheme, so it needs an app to open on. Pass --app, or save an app scheme with `simbuddy bundles add <name> <bundle-id> --scheme <scheme>`."
+    case .missingLinkParameter(let name):
+      return "This link needs a value for $\(name). Pass --set \(name)=<value>."
+    case .appHasNoScheme(let name):
+      return
+        "Saved app \u{201C}\(name)\u{201D} has no scheme. Add one with `simbuddy bundles add \(name) <bundle-id> --scheme <scheme> --force`."
+    case .noSchemeForLink(let name):
+      return
+        "No saved app with a scheme can open \u{201C}\(name)\u{201D}. Add one with `simbuddy bundles add <name> <bundle-id> --scheme <scheme>`."
+    case .appNotInstalled(let identifier, let device):
+      return "\(identifier) is not installed on \(device)."
+    case .appNotRunning(let identifier, let device):
+      return "\(identifier) is not running on \(device)."
+    case .unsupportedAction(let capability, let kind):
+      return "\(kind.label)s cannot do that. \(capability.unavailableReason(for: kind))"
+    case .wrongBuildForDevice(let name, let kind, let hint):
+      return "\(name) cannot be installed on a \(kind.label.lowercased()). \(hint)"
+    case .devicectlUnavailable:
+      return
+        "devicectl is not available. Physical devices need Xcode 15 or newer; run `simbuddy doctor`."
+    case .invalidAssignment(let value):
+      return "\u{201C}\(value)\u{201D} is not a name=value pair. Write --set slot=staging5."
+    case .invalidScheme(let value):
+      return
+        "\u{201C}\(value)\u{201D} is not a valid URL scheme. Use letters, digits, +, -, and . starting with a letter."
     }
   }
 }

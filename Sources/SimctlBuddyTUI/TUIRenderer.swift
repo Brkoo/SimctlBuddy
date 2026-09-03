@@ -2,7 +2,42 @@ import Foundation
 import SimctlBuddyCore
 
 public struct TUIRenderer: Sendable {
-  public init() {}
+  /// How wide the terminal draws the ambiguous-width glyphs this interface is
+  /// built from. Measured once at startup; see `DisplayMetrics`.
+  private let metrics: DisplayMetrics
+
+  public init(metrics: DisplayMetrics = .narrow) {
+    self.metrics = metrics
+  }
+
+  /// Columns, not characters.
+  private func columns(of value: String) -> Int {
+    metrics.width(of: value)
+  }
+
+  /// The frame is drawn from box-drawing characters, which are ambiguous-width.
+  /// On a terminal that draws them two columns wide they would double the cost
+  /// of every border and squeeze the content, so fall back to ASCII, which is
+  /// one column everywhere and keeps the layout arithmetic exact.
+  private struct Border {
+    let topLeft: String
+    let topRight: String
+    let bottomLeft: String
+    let bottomRight: String
+    let horizontal: String
+    let vertical: String
+
+    static let unicode = Border(
+      topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘",
+      horizontal: "─", vertical: "│")
+    static let ascii = Border(
+      topLeft: "+", topRight: "+", bottomLeft: "+", bottomRight: "+",
+      horizontal: "-", vertical: "|")
+  }
+
+  private var border: Border {
+    metrics.ambiguousWidth == 1 ? .unicode : .ascii
+  }
 
   public func render(state: TUIState, columns: Int, rows: Int) -> String {
     guard columns >= 78, rows >= 18 else {
@@ -41,10 +76,10 @@ public struct TUIRenderer: Sendable {
 
   private func headerLines(state: TUIState, columns: Int) -> [String] {
     let brand = " SIMCTLBUDDY  ·  iOS Simulator control deck"
-    let bar = brand.padding(toLength: max(brand.count, columns), withPad: " ", startingAt: 0)
-    var result = [style(String(bar.prefix(columns)), .bar)]
+    var result = [style(metrics.pad(brand, to: columns), .bar)]
 
     let booted = state.devices.filter(\.isBooted).count
+    let physical = state.devices.filter { $0.kind == .physical }.count
     var chips = [Segment]()
     if let device = state.selectedDevice {
       chips += [
@@ -57,13 +92,27 @@ public struct TUIRenderer: Sendable {
     } else {
       chips.append(Segment(" No simulator selected", .dim))
     }
-    let tally = "\(modeName(state.screenMode)) · \(booted) booted · \(state.devices.count) total "
-    let used = Line(segments: chips).plain.count
-    let gap = max(1, columns - used - tally.count)
+    if let recording = state.recording {
+      // Impossible to miss, because forgetting a running recording is easy.
+      chips += [
+        Segment("  ● REC ", .boldRed),
+        Segment(Self.elapsed(recording.duration()), .red),
+      ]
+    }
+    let deviceTally = physical > 0 ? " · \(physical) device\(physical == 1 ? "" : "s")" : ""
+    let tally =
+      "\(modeName(state.screenMode)) · \(booted) ready\(deviceTally) · \(state.devices.count) total "
+    let used = self.columns(of: Line(segments: chips).plain)
+    let gap = max(1, columns - used - self.columns(of: tally))
     chips.append(Segment(String(repeating: " ", count: gap), nil))
     chips.append(Segment(tally, .dim))
     result.append(compose(Line(segments: chips), width: columns))
     return result
+  }
+
+  static func elapsed(_ seconds: TimeInterval) -> String {
+    let whole = max(0, Int(seconds))
+    return String(format: "%d:%02d", whole / 60, whole % 60)
   }
 
   /// Keeps as many key hints as fit, separated by middots.
@@ -72,7 +121,7 @@ public struct TUIRenderer: Sendable {
     var used = 0
     for (key, label) in hints {
       let separator = segments.isEmpty ? "" : " · "
-      let cost = separator.count + key.count + 1 + label.count
+      let cost = columns(of: separator) + columns(of: key) + 1 + columns(of: label)
       guard used + cost <= width else { break }
       if !separator.isEmpty { segments.append(Segment(separator, .dim)) }
       segments.append(Segment(key, .key))
@@ -218,17 +267,17 @@ public struct TUIRenderer: Sendable {
   }
 
   private func footerLines(state: TUIState, columns: Int) -> [String] {
-    if state.picker != nil {
+    if let picker = state.picker {
       return [
         compose(
           Line(segments: [
             Segment(" ", nil),
-            Segment("Pick an app", .boldYellow), Segment(" · ", .dim),
+            Segment(picker.title, .boldYellow), Segment(" · ", .dim),
             Segment("type", .key), Segment(" to search · ", .dim),
             Segment("Tab", .key), Segment(" enter one by hand", .dim),
           ]), width: columns),
         compose(
-          Line(segments: [Segment(" Saved apps are listed first", .dim)]), width: columns),
+          Line(segments: [Segment(" \(picker.footnote)", .dim)]), width: columns),
       ]
     }
 
@@ -291,6 +340,8 @@ public struct TUIRenderer: Sendable {
       ("/", "filter"),
       ("+/-", "size"),
       ("o", "link"),
+      ("s", "shot"),
+      ("R", "record"),
       ("r", "refresh"),
     ]
     let nav = Line(segments: [Segment(" ", nil)] + fittedHints(hints, width: columns - 1))
@@ -298,7 +349,7 @@ public struct TUIRenderer: Sendable {
       Segment(" ", nil),
       Segment("q", .key), Segment(" quit · ", .dim),
       Segment("?", .key), Segment(" help   ", .dim),
-      Segment("Actions target the selected simulator", .dim),
+      Segment("Actions target the highlighted device", .dim),
     ])
     return [compose(nav, width: columns), compose(meta, width: columns)]
   }
@@ -312,41 +363,118 @@ public struct TUIRenderer: Sendable {
         return [Line(segments: [Segment("No devices match /\(state.deviceFilter)", .dim)])]
       }
       return [
-        Line(segments: [Segment("No simulators found", .dim)]),
+        Line(segments: [Segment("No devices found", .dim)]),
         Line(segments: [Segment("Run doctor for diagnostics", .dim)]),
       ]
     }
     return visible.map { device in
-      Line(segments: [
+      var segments = [
         Segment(device.isBooted ? "● " : "○ ", device.isBooted ? .boldGreen : .dim),
         Segment(device.name, device.isBooted ? .bold : nil),
-        Segment("  \(device.runtimeName)", .dim),
-      ])
+      ]
+      if device.kind == .physical {
+        segments.append(Segment("  device", .magenta))
+      }
+      segments.append(Segment("  \(device.runtimeName)", .dim))
+      return Line(segments: segments)
     }
   }
 
   private func detailLines(state: TUIState) -> [Line] {
     var lines = [Line]()
     if state.selectedDevice == nil {
-      lines.append(Line(segments: [Segment("No simulator selected", .dim)]))
+      lines.append(Line(segments: [Segment("No device selected", .dim)]))
     }
     if let device = state.selectedDevice {
       lines += [
         Line(segments: [Segment(device.name, .bold)]),
-        Line(segments: [Segment(device.runtimeName, .dim)]),
+        Line(segments: [
+          Segment(device.runtimeName, .dim),
+          Segment(device.kind == .physical ? "  device" : "  simulator", .magenta),
+        ]),
         Line(segments: [
           Segment(device.isBooted ? "● " : "○ ", device.isBooted ? .boldGreen : .dim),
           Segment(device.state, device.isBooted ? .green : .dim),
+          Segment(device.isWireless ? "  wireless" : "", .dim),
         ]),
+      ]
+      if let model = device.modelName {
+        lines.append(Line(segments: [Segment(model, .dim)]))
+      }
+      lines += [
         Line(segments: [Segment(device.udid, .dim)]),
         Line(segments: []),
       ]
     }
+    if let recording = state.recording {
+      lines += [
+        Line(segments: [Segment("RECORDING", .section)]),
+        Line(segments: [
+          Segment("● ", .boldRed),
+          Segment(Self.elapsed(recording.duration()), .red),
+          Segment("  \(recording.deviceName)", .dim),
+        ]),
+        Line(segments: [Segment(recording.fileName, .magenta)]),
+        Line(segments: []),
+        Line(segments: [
+          Segment("R", .key), Segment(" Press R to stop and save.", .dim),
+        ]),
+        Line(segments: []),
+      ]
+    }
+    if case .savedPath(let saved) = state.selectedAction?.id {
+      lines += [
+        Line(segments: [Segment("SAVED BUILD", .section)]),
+        Line(segments: [Segment(saved.name, .bold)]),
+        Line(segments: [Segment(saved.path, .magenta)]),
+        Line(segments: [
+          saved.exists
+            ? Segment("On disk", .green)
+            : Segment("Not on disk right now", .red)
+        ]),
+        Line(segments: []),
+        Line(segments: [
+          Segment("↵", .key), Segment(" Press Enter to install it.", .dim),
+        ]),
+        Line(segments: [
+          Segment("e", .key), Segment(" Press e to edit its path.", .dim),
+        ]),
+        Line(segments: [
+          Segment("d", .key), Segment(" Press d to delete it.", .dim),
+        ]),
+      ]
+    }
     if case .savedLink(let link) = state.selectedAction?.id {
+      let template = link.template
       lines += [
         Line(segments: [Segment("SAVED LINK", .section)]),
         Line(segments: [Segment(link.name, .bold)]),
         Line(segments: [Segment(link.url, .magenta)]),
+      ]
+      if template.requiresScheme {
+        let schemes = state.apps.compactMap(\.scheme)
+        lines.append(
+          Line(segments: [
+            Segment("$scheme", .key),
+            Segment(
+              schemes.isEmpty ? " no app has one yet" : " from the app you pick", .dim),
+          ]))
+      }
+      for parameter in template.parameters {
+        let detail = parameter.defaultValue.map { " default \($0)" } ?? " asked for"
+        lines.append(
+          Line(segments: [Segment("$\(parameter.name)", .key), Segment(detail, .dim)]))
+      }
+      if let apps = link.apps, !apps.isEmpty {
+        let names = apps.map { identifier in
+          state.apps.first { $0.bundleIdentifier == identifier }?.name ?? identifier
+        }
+        lines.append(
+          Line(segments: [
+            Segment("only", .key), Segment(" \(names.joined(separator: ", "))", .dim),
+          ]))
+      }
+      lines += [
         Line(segments: []),
         Line(segments: [
           Segment("↵", .key), Segment(" Press Enter to open it.", .dim),
@@ -450,11 +578,11 @@ public struct TUIRenderer: Sendable {
     for (index, action) in visible.enumerated() {
       let section = sectionTitle(for: action.id)
       if section != currentSection {
-        let fill = max(1, width - section.count - 1)
+        let fill = max(1, (width - columns(of: section) - 1) / columns(of: border.horizontal))
         lines.append(
           Line(segments: [
             Segment(section, .section),
-            Segment(" " + String(repeating: "─", count: fill), .border),
+            Segment(" " + String(repeating: border.horizontal, count: fill), .border),
           ]))
         currentSection = section
       }
@@ -470,12 +598,16 @@ public struct TUIRenderer: Sendable {
 
   private func sectionTitle(for id: TUIActionID) -> String {
     switch id {
-    case .openDeepLink, .addSavedLink, .savedLink: return "LINKS"
+    case .openDeepLink, .addSavedLink, .savedLink, .exportLinks, .importLinks: return "LINKS"
     case .savedApp, .saveApp: return "SAVED APPS"
+    case .savedPath, .savePath: return "SAVED BUILDS"
     case .boot, .shutdown: return "DEVICE"
-    case .installApp, .launchApp, .terminateApp, .listApps, .push: return "APPS"
+    case .installApp, .launchApp, .terminateApp, .listApps, .listRunningApps, .push:
+      return "APPS"
     case .privacy, .privacyReset: return "PRIVACY"
-    case .screenshot, .clipboard, .clipboardPaste, .location, .locationClear: return "CAPTURE"
+    case .screenshot, .startRecording, .stopRecording, .screenshotDirectory,
+      .recordingDirectory, .clipboard, .clipboardPaste, .location, .locationClear:
+      return "CAPTURE"
     case .appearanceDark, .appearanceLight, .cleanStatusBar, .clearStatusBar: return "APPEARANCE"
     case .doctor, .refresh: return "SYSTEM"
     }
@@ -491,8 +623,8 @@ public struct TUIRenderer: Sendable {
       ("Enter", "Run action"),
       ("o", "Open deep link"),
       ("a", "Add saved deep link"),
-      ("e", "Edit highlighted saved link"),
-      ("d", "Delete highlighted saved link or app"),
+      ("e", "Edit highlighted saved link, app, or build"),
+      ("d", "Delete highlighted saved link, app, or build"),
       ("p", "Send a push notification"),
       ("v", "Read the simulator clipboard"),
       ("b", "Boot selected device"),
@@ -501,6 +633,7 @@ public struct TUIRenderer: Sendable {
       ("L", "Launch app by bundle ID"),
       ("t", "Terminate app by bundle ID"),
       ("s", "Take screenshot"),
+      ("R", "Start or stop screen recording"),
       ("c", "Copy text to simulator"),
       ("g", "Set simulator location"),
       ("r", "Refresh devices"),
@@ -512,15 +645,31 @@ public struct TUIRenderer: Sendable {
       Line(segments: []),
     ]
     lines += shortcuts.map { key, label in
-      let padded = " \(key)".padding(toLength: 14, withPad: " ", startingAt: 0)
+      let padded = metrics.pad(" \(key)", to: 14)
       return Line(segments: [Segment(padded, .key), Segment(label, nil)])
     }
     lines += [
       Line(segments: []),
       Line(segments: [
         Segment(
-          " All actions operate on the highlighted simulator. Shut down devices must be "
-            + "booted before most actions can run.", .dim)
+          " All actions operate on the highlighted device. A simulator must be booted "
+            + "and a physical device connected and unlocked. Actions a device cannot do are "
+            + "not listed for it.", .dim)
+      ]),
+      Line(segments: []),
+      Line(segments: [Segment("PATH FIELDS", .section)]),
+      Line(segments: []),
+      Line(segments: [
+        Segment(" Tab", .key),
+        Segment(
+          "          completes a path. Press it again after typing more. Ambiguous "
+            + "matches are listed under the field.", .dim),
+      ]),
+      Line(segments: [
+        Segment(" ", nil),
+        Segment(
+          "              Screenshots and recordings land in the folders set under "
+            + "CAPTURE, or in the working directory.", .dim),
       ]),
     ]
     return lines
@@ -529,8 +678,9 @@ public struct TUIRenderer: Sendable {
   // MARK: - Dialog
 
   private func promptOverlay(prompt: TUIPrompt, columns: Int, rows: Int) -> String {
-    let width = min(72, max(50, columns * 2 / 3))
-    let height = 9
+    // Never wider than the window, and never touching the last column: writing
+    // the final cell of a row arms the terminal's auto-wrap.
+    let width = min(72, max(50, columns * 2 / 3), max(30, columns - 2))
     let inputWidth = width - 6
     let input: String
     if prompt.value.isEmpty {
@@ -556,19 +706,41 @@ public struct TUIRenderer: Sendable {
         Line(segments: []),
       ]
     } else {
-      body += [
-        Line(segments: [Segment(" › ", .boldCyan), Segment(input, nil)]),
-        Line(segments: [Segment(" Example: \(promptPlaceholder(for: prompt.kind))", .dim)]),
-        Line(segments: []),
-        Line(segments: [
-          Segment(" Enter", .key), Segment(" confirm  ·  ", .dim),
-          Segment("Ctrl+U", .key), Segment(" clear  ·  ", .dim),
-          Segment("Esc", .key), Segment(" cancel", .dim),
-        ]),
-        Line(segments: []),
+      body.append(Line(segments: [Segment(" › ", .boldCyan), Segment(input, nil)]))
+      // The last Tab press replaces the example, which has served its purpose
+      // by the time there is something in the field.
+      if let note = prompt.note {
+        body.append(
+          Line(segments: [Segment(" \(note)", prompt.candidates.isEmpty ? .red : .dim)]))
+      } else {
+        body.append(
+          Line(segments: [Segment(" Example: \(promptPlaceholder(for: prompt.kind))", .dim)]))
+      }
+      // Everything except the candidate list is fixed, so a short window buys
+      // room by listing fewer matches rather than by overflowing. Keeping the
+      // dialog to roughly three fifths of the window also leaves the panels
+      // behind it readable instead of covering almost everything.
+      let fixedHeight = 9
+      let budget = max(fixedHeight, rows * 3 / 5) - fixedHeight
+      body += candidateLines(
+        prompt.candidates,
+        width: width - 4,
+        maxRows: max(0, min(4, budget))
+      )
+      body.append(Line(segments: []))
+      var hints = [Segment(" Enter", .key), Segment(" confirm  ·  ", .dim)]
+      if prompt.supportsCompletion {
+        hints += [Segment("Tab", .key), Segment(" complete  ·  ", .dim)]
+      }
+      hints += [
+        Segment("Ctrl+U", .key), Segment(" clear  ·  ", .dim),
+        Segment("Esc", .key), Segment(" cancel", .dim),
       ]
+      body.append(Line(segments: hints))
+      body.append(Line(segments: []))
     }
 
+    let height = min(body.count + 2, max(5, rows - 1))
     let dialog = box(
       title: promptTitle(for: prompt.kind),
       width: width,
@@ -577,18 +749,59 @@ public struct TUIRenderer: Sendable {
       selected: nil,
       focused: true
     )
-    let top = max(3, (rows - height) / 2 + 1)
-    let left = max(1, (columns - width) / 2 + 1)
 
-    return dialog.enumerated().map { index, line in
+    return place(dialog, width: width, height: height, columns: columns, rows: rows)
+  }
+
+  /// Positions an overlay so it always lands inside the window. Centring alone
+  /// overflows once the dialog is taller or wider than the space available,
+  /// which leaves rows of a previous frame stranded on screen.
+  private func place(
+    _ overlay: [String],
+    width: Int,
+    height: Int,
+    columns: Int,
+    rows: Int
+  ) -> String {
+    let top = max(1, min((rows - height) / 2 + 1, rows - height))
+    let left = max(1, min((columns - width) / 2 + 1, columns - width))
+    return overlay.prefix(max(0, rows - top + 1)).enumerated().map { index, line in
       "\u{001B}[\(top + index);\(left)H\(line)"
     }.joined()
   }
 
+  /// Packs an ambiguous completion into a few rows so the dialog does not grow
+  /// without limit on a directory full of builds.
+  private func candidateLines(_ candidates: [String], width: Int, maxRows: Int) -> [Line] {
+    guard !candidates.isEmpty, maxRows > 0 else { return [] }
+    let shown = Array(candidates.prefix(9))
+    var rows = [String]()
+    var current = ""
+    for name in shown {
+      let combined = current.isEmpty ? name : current + "   " + name
+      if columns(of: combined) > width, !current.isEmpty {
+        rows.append(current)
+        current = name
+      } else {
+        current = combined
+      }
+    }
+    if !current.isEmpty { rows.append(current) }
+    if candidates.count > shown.count {
+      rows.append("+\(candidates.count - shown.count) more")
+    }
+    return rows.prefix(maxRows).map { row in
+      Line(segments: [Segment(" \(truncate(row, width: width))", .magenta)])
+    }
+  }
+
   private func pickerOverlay(picker: TUIPicker, columns: Int, rows: Int) -> String {
-    let width = min(76, max(52, columns * 2 / 3))
+    let width = min(76, max(52, columns * 2 / 3), max(30, columns - 2))
     let visible = picker.visibleOptions
-    let listHeight = max(1, min(10, visible.count))
+    // Seven rows of chrome around the list, so a short window shows a shorter
+    // list instead of a dialog that runs off the bottom.
+    let listBudget = max(1, rows - 1 - 7)
+    let listHeight = max(1, min(10, listBudget, visible.count))
     let height = listHeight + 7
 
     var body: [Line] = [
@@ -602,7 +815,7 @@ public struct TUIRenderer: Sendable {
       body.append(
         Line(segments: [
           Segment(
-            picker.isLoading ? " Reading installed apps…" : " No apps match this search", .dim)
+            picker.isLoading ? " \(picker.loadingMessage)…" : " Nothing matches this search", .dim)
         ]))
     } else {
       // Keep the highlighted row on screen for long app lists.
@@ -633,7 +846,7 @@ public struct TUIRenderer: Sendable {
       ]),
     ]
     if picker.isLoading && !visible.isEmpty {
-      body.append(Line(segments: [Segment(" Still reading installed apps…", .dim)]))
+      body.append(Line(segments: [Segment(" \(picker.loadingMessage)…", .dim)]))
     }
 
     let dialog = box(
@@ -644,11 +857,7 @@ public struct TUIRenderer: Sendable {
       selected: nil,
       focused: true
     )
-    let top = max(2, (rows - height) / 2 + 1)
-    let left = max(1, (columns - width) / 2 + 1)
-    return dialog.enumerated().map { index, line in
-      "\u{001B}[\(top + index);\(left)H\(line)"
-    }.joined()
+    return place(dialog, width: width, height: height, columns: columns, rows: rows)
   }
 
   private func promptTitle(for kind: TUIPromptKind) -> String {
@@ -671,6 +880,17 @@ public struct TUIRenderer: Sendable {
     case .savedAppName: return "Save app · name it"
     case .editSavedAppBundle(let name): return "Edit \(name)"
     case .confirmRemoveSavedApp: return "Delete saved app"
+    case .savedPathValue: return "Save build · 1 of 2"
+    case .savedPathName: return "Save build · 2 of 2"
+    case .editSavedPath(let name): return "Edit \(name)"
+    case .confirmRemoveSavedPath: return "Delete saved build"
+    case .screenshotDirectory: return "Screenshot folder"
+    case .recordingDirectory: return "Recording folder"
+    case .exportLinks: return "Export deep links"
+    case .importLinks: return "Import deep links"
+    case .savedAppScheme(let name, _): return "Scheme for \(name)"
+    case .linkParameter(let link, let parameter):
+      return link.isEmpty ? "Fill in $\(parameter)" : "\(link) · $\(parameter)"
     }
   }
 
@@ -686,9 +906,16 @@ public struct TUIRenderer: Sendable {
     case .pushBundle, .privacyBundle, .privacyResetBundle: return "com.example.MyApp"
     case .pushPayload: return "~/payloads/welcome.apns"
     case .privacyService: return "photos, camera, microphone, contacts, location"
-    case .confirmRemoveSavedLink, .confirmRemoveSavedApp: return ""
+    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath: return ""
     case .savedAppName: return "Checkout build"
     case .editSavedAppBundle: return "com.example.MyApp"
+    case .savedPathValue, .editSavedPath: return "~/Library/Developer/Xcode/DerivedData/…/MyApp.app"
+    case .savedPathName: return "Staging build"
+    case .screenshotDirectory: return "~/Desktop/simulator-shots"
+    case .recordingDirectory: return "~/Desktop/simulator-recordings"
+    case .exportLinks, .importLinks: return "~/team/deep-links.json"
+    case .savedAppScheme: return "myapp — leave empty if the app has no scheme"
+    case .linkParameter: return "staging5"
     }
   }
 
@@ -702,14 +929,32 @@ public struct TUIRenderer: Sendable {
     selected: Int?,
     focused: Bool
   ) -> [String] {
-    let innerWidth = max(1, width - 2)
+    let border = self.border
+    let edgeWidth = columns(of: border.vertical)
+    let innerWidth = max(1, width - 2 * edgeWidth)
     let borderStyle: Style = focused ? .borderFocus : .border
-    let titleText = " \(title) "
-    let topFill = max(0, innerWidth - titleText.count)
+
+    let titleText = metrics.truncate(" \(title) ", to: innerWidth)
+    // Pad the rule out in whole glyphs, then make up any remainder with spaces
+    // so the row lands on exactly `width` columns.
+    let ruleWidth = columns(of: border.horizontal)
+    let titleRoom = max(0, innerWidth - columns(of: titleText))
+    let topFill = titleRoom / ruleWidth
+    let topSlack = titleRoom - topFill * ruleWidth
     let top =
-      style("┌", borderStyle) + style(String(titleText.prefix(innerWidth)), focused ? .boldCyan : .title)
-      + style(String(repeating: "─", count: topFill), borderStyle) + style("┐", borderStyle)
-    let bottom = style("└" + String(repeating: "─", count: innerWidth) + "┘", borderStyle)
+      style(border.topLeft, borderStyle) + style(titleText, focused ? .boldCyan : .title)
+      + style(String(repeating: border.horizontal, count: topFill), borderStyle)
+      + String(repeating: " ", count: topSlack)
+      + style(border.topRight, borderStyle)
+
+    let bottomFill = innerWidth / ruleWidth
+    let bottomSlack = innerWidth - bottomFill * ruleWidth
+    let bottom =
+      style(
+        border.bottomLeft + String(repeating: border.horizontal, count: bottomFill),
+        borderStyle)
+      + String(repeating: " ", count: bottomSlack)
+      + style(border.bottomRight, borderStyle)
     var result = [top]
 
     let contentHeight = max(0, height - 2)
@@ -730,8 +975,8 @@ public struct TUIRenderer: Sendable {
       } else {
         content = compose(line, width: innerWidth)
       }
-      let border = style("│", borderStyle)
-      result.append(border + content + border)
+      let edge = style(border.vertical, borderStyle)
+      result.append(edge + content + edge)
     }
     result.append(bottom)
     return result
@@ -747,15 +992,17 @@ public struct TUIRenderer: Sendable {
     for segment in line.segments {
       guard remaining > 0 else { break }
       let text: String
-      if segment.text.count > remaining {
+      if columns(of: segment.text) > remaining {
         text = truncate(segment.text, width: remaining)
       } else {
         text = segment.text
       }
       guard !text.isEmpty else { continue }
       rendered += segment.style.map { style(text, $0) } ?? text
-      used += text.count
-      remaining -= text.count
+      // Columns consumed, which is not the same as characters written.
+      let cost = columns(of: text)
+      used += cost
+      remaining -= cost
     }
 
     guard let width else { return rendered }
@@ -763,14 +1010,17 @@ public struct TUIRenderer: Sendable {
   }
 
   private func pad(_ value: String, width: Int) -> String {
-    value + String(repeating: " ", count: max(0, width - value.count))
+    metrics.pad(value, to: width)
   }
 
   private func truncate(_ value: String, width: Int) -> String {
     guard width > 0 else { return "" }
-    guard value.count > width else { return value }
-    guard width > 1 else { return String(value.prefix(width)) }
-    return String(value.prefix(width - 1)) + "…"
+    guard columns(of: value) > width else { return value }
+    // The ellipsis is itself ambiguous-width, so it has to be paid for.
+    let marker = "…"
+    let markerWidth = columns(of: marker)
+    guard width > markerWidth else { return metrics.truncate(value, to: width) }
+    return metrics.truncate(value, to: width - markerWidth) + marker
   }
 
   // MARK: - Styling
@@ -795,6 +1045,7 @@ public struct TUIRenderer: Sendable {
     case bold
     case boldCyan
     case boldGreen
+    case boldRed
     case boldYellow
     case border
     case borderFocus
@@ -817,6 +1068,7 @@ public struct TUIRenderer: Sendable {
     case .bold: code = "1"
     case .boldCyan: code = "1;36"
     case .boldGreen: code = "1;32"
+    case .boldRed: code = "1;31"
     case .boldYellow: code = "1;33"
     case .border: code = "90"
     case .borderFocus: code = "1;36"

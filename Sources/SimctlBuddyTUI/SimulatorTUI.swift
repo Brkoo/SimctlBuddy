@@ -7,17 +7,23 @@ private enum JobOutcome: Sendable {
   case message(String)
   case report(String, details: [String])
   case installed([String])
-  case reload(String?)
+  /// Options for the picker that is already on screen.
+  case pickerOptions([TUIPickerOption], message: String? = nil)
+  case reload(String?, details: [String] = [])
 }
 
 private struct JobResult: Sendable {
   var message: String?
   var details: [String] = []
   var installedApps: [String]?
+  var pickerOptions: [TUIPickerOption]?
   var isError = false
   var devices: [SimulatorDevice]?
   var links: [SavedLink]?
   var apps: [SavedApp]?
+  var paths: [SavedPath]?
+  var recentPaths: [String]?
+  var settings: Settings?
 }
 
 /// Hands results from the simctl queue back to the render loop.
@@ -42,10 +48,16 @@ private final class JobMailbox: @unchecked Sendable {
 
 public final class SimulatorTUI {
   private let client: SimctlClient
+  private let service: DeviceService
   private let linkStore: LinkStore
   private let appStore: AppStore
+  private let pathStore: PathStore
+  private let settingsStore: SettingsStore
+  private let valueStore: LinkValueStore
+  private let recorder: Recorder
+  private let completer: PathCompleter
   private let terminal: TerminalSession
-  private let renderer: TUIRenderer
+  private var renderer: TUIRenderer
   private var state = TUIState()
   private var shouldQuit = false
   private let mailbox = JobMailbox()
@@ -53,12 +65,24 @@ public final class SimulatorTUI {
 
   public init(
     client: SimctlClient = SimctlClient(),
+    service: DeviceService? = nil,
     linkStore: LinkStore = LinkStore(),
-    appStore: AppStore = AppStore()
+    appStore: AppStore = AppStore(),
+    pathStore: PathStore = PathStore(),
+    settingsStore: SettingsStore = SettingsStore(),
+    valueStore: LinkValueStore = LinkValueStore(),
+    recorder: Recorder = Recorder(),
+    completer: PathCompleter = PathCompleter()
   ) {
     self.client = client
+    self.service = service ?? DeviceService(simctl: client)
     self.linkStore = linkStore
     self.appStore = appStore
+    self.pathStore = pathStore
+    self.settingsStore = settingsStore
+    self.valueStore = valueStore
+    self.recorder = recorder
+    self.completer = completer
     terminal = TerminalSession()
     renderer = TUIRenderer()
   }
@@ -66,8 +90,21 @@ public final class SimulatorTUI {
   public func run() throws {
     try terminal.start()
     defer { terminal.stop() }
+    // Quitting mid-recording would otherwise orphan simctl and lose the movie.
+    defer { recorder.cancel() }
 
-    reloadEverything(message: "Welcome. Select a simulator and an action.")
+    // Ask the terminal how wide it draws the glyphs this interface is made of,
+    // before anything is drawn with them.
+    let ambiguousWidth = terminal.measureAmbiguousWidth()
+    renderer = TUIRenderer(metrics: DisplayMetrics(ambiguousWidth: ambiguousWidth))
+
+    reloadEverything(message: "Welcome. Select a device and an action.")
+    if ambiguousWidth == 2 {
+      // Worth saying out loud: it explains the ASCII frame, and confirms the
+      // measurement if the layout ever looks wrong again.
+      appendOutput(
+        "This terminal draws box glyphs double width, so the frame is ASCII")
+    }
     var lastSize = terminal.size()
     draw()
     // readKey returns after a short timeout, which doubles as the animation and
@@ -83,9 +120,12 @@ public final class SimulatorTUI {
         state.spinnerFrame += 1
         needsDraw = true
       }
+      // The header counts the recording up, so it needs a tick of its own.
+      if state.recording != nil { needsDraw = true }
       let size = terminal.size()
       if size != lastSize {
         lastSize = size
+        terminal.clear()
         needsDraw = true
       }
       if needsDraw && !shouldQuit { draw() }
@@ -105,8 +145,11 @@ public final class SimulatorTUI {
 
     let mailbox = self.mailbox
     let client = self.client
+    let service = self.service
     let linkStore = self.linkStore
     let appStore = self.appStore
+    let pathStore = self.pathStore
+    let settingsStore = self.settingsStore
     jobQueue.async {
       var result = JobResult()
       var reload = false
@@ -119,8 +162,12 @@ public final class SimulatorTUI {
           result.details = details
         case .installed(let identifiers):
           result.installedApps = identifiers
-        case .reload(let text):
+        case .pickerOptions(let options, let message):
+          result.pickerOptions = options
+          result.message = message
+        case .reload(let text, let extra):
           result.message = text
+          result.details = extra
           reload = true
         }
       } catch {
@@ -128,9 +175,15 @@ public final class SimulatorTUI {
         result.isError = true
       }
       if reload {
-        result.devices = try? client.devices()
+        // Physical devices are best effort: a missing devicectl must not empty
+        // the list.
+        result.devices = try? service.devices()
         result.links = try? linkStore.load()
         result.apps = try? appStore.load()
+        let book = try? pathStore.load()
+        result.paths = book?.saved
+        result.recentPaths = book?.recent
+        result.settings = try? settingsStore.load()
       }
       mailbox.post(result)
     }
@@ -143,14 +196,29 @@ public final class SimulatorTUI {
       if let devices = result.devices { applyDevices(devices) }
       if let links = result.links { state.links = links }
       if let apps = result.apps { state.apps = apps }
+      if let paths = result.paths { state.paths = paths }
+      if let recentPaths = result.recentPaths { state.recentPaths = recentPaths }
+      if let settings = result.settings { state.settings = settings }
       if let installed = result.installedApps { applyInstalledApps(installed) }
+      if let options = result.pickerOptions { applyPickerOptions(options) }
       if let message = result.message {
         appendReport(message, details: result.details, error: result.isError)
       }
     }
     state.busy = nil
+    // The recorder owns the truth about whether a recording is live.
+    state.recording = recorder.session
     state.clampSelections()
     return true
+  }
+
+  /// Fills in a picker whose contents had to be read from the device.
+  private func applyPickerOptions(_ options: [TUIPickerOption]) {
+    guard var picker = state.picker else { return }
+    let known = Set(picker.options.map(\.value))
+    picker.options += options.filter { !known.contains($0.value) }
+    picker.isLoading = false
+    state.picker = picker
   }
 
   private func applyInstalledApps(_ identifiers: [String]) {
@@ -257,13 +325,15 @@ public final class SimulatorTUI {
     case .text("x"):
       execute(.shutdown)
     case .text("i"):
-      beginPrompt(.installApp, label: "Path to .app")
+      openInstallPicker()
     case .text("L"):
       beginPrompt(.launchApp, label: "Bundle identifier")
     case .text("t"):
       beginPrompt(.terminateApp, label: "Bundle identifier")
     case .text("s"):
       execute(.screenshot)
+    case .text("R"):
+      execute(state.isRecording ? .stopRecording : .startRecording)
     case .text("c"):
       beginPrompt(.clipboard, label: "Text to copy")
     case .text("g"):
@@ -311,6 +381,7 @@ public final class SimulatorTUI {
       return
     case .escape:
       state.picker = nil
+      state.pendingLink = nil
       appendOutput("Cancelled")
       return
     case .enter:
@@ -356,6 +427,10 @@ public final class SimulatorTUI {
       beginPrompt(.privacyBundle(action: action, service: service), label: "Bundle identifier")
     case .privacyResetBundle: beginPrompt(.privacyResetBundle, label: "Bundle identifier")
     case .saveApp: beginPrompt(.savedAppName(bundleIdentifier: ""), label: "Bundle identifier")
+    case .installPath: beginPrompt(.installApp, label: "Path to .app")
+    case .savePath: beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
+    case .linkApp:
+      appendOutput("Pick an app for this link, or press Esc", error: true)
     }
   }
 
@@ -373,20 +448,275 @@ public final class SimulatorTUI {
       resetPrivacy(bundleIdentifier)
     case .saveApp:
       beginPrompt(.savedAppName(bundleIdentifier: bundleIdentifier), label: "Name for this app")
+    case .installPath:
+      install(path: bundleIdentifier)
+    case .savePath:
+      beginPrompt(.savedPathName(path: bundleIdentifier), label: "Name for this build")
+    case .linkApp:
+      chooseLinkApp(bundleIdentifier)
+    }
+  }
+
+  /// Install without retyping a build path: saved paths first, then whatever
+  /// was installed recently. Both come from state, so this needs no device call.
+  private func openInstallPicker() {
+    guard bootedSelection() != nil else { return }
+    let saved = state.paths.map {
+      TUIPickerOption(
+        value: $0.path,
+        label: $0.name,
+        detail: $0.exists ? $0.path : "\($0.path) · missing"
+      )
+    }
+    let savedPaths = Set(state.paths.map(\.path))
+    let recent = state.recentPaths.filter { !savedPaths.contains($0) }
+      .map { TUIPickerOption(value: $0, label: $0, detail: "recent") }
+
+    guard !saved.isEmpty || !recent.isEmpty else {
+      // Nothing remembered yet, so skip straight to the field.
+      beginPrompt(.installApp, label: "Path to .app")
+      return
+    }
+    state.picker = TUIPicker(
+      purpose: .installPath,
+      title: "Install · pick a build",
+      footnote: "Saved builds first, then recently installed",
+      loadingMessage: "Reading saved builds",
+      options: saved + recent,
+      isLoading: false
+    )
+  }
+
+  /// Terminate is only ever aimed at something running, so running apps lead.
+  private func openTerminatePicker() {
+    guard let device = bootedSelection() else { return }
+    state.picker = TUIPicker(
+      purpose: .terminateApp,
+      title: "Terminate app",
+      footnote: "Running apps first, then everything installed",
+      loadingMessage: "Reading running apps",
+      options: [],
+      isLoading: true
+    )
+    let client = self.client
+    startJob("Reading running apps") {
+      let running = try client.runningBundleIdentifiers(device: device)
+      let installed = try client.installedBundleIdentifiers(device: device)
+      let runningSet = Set(running)
+      let options =
+        running.map { TUIPickerOption(value: $0, label: $0, detail: "running") }
+        + installed.filter { !runningSet.contains($0) }
+        .map { TUIPickerOption(value: $0, label: $0, detail: "installed") }
+      return .pickerOptions(
+        options,
+        message: running.isEmpty ? "No apps are running on \(device.name)" : nil)
+    }
+  }
+
+  private func install(path: String) {
+    let pathStore = self.pathStore
+    onBootedDevice("Installing app", reload: true, capability: .install) { device, service in
+      let bundle = try service.install(appAt: path, device: device)
+      // Remembering it here is what fills the picker next time.
+      try? pathStore.recordRecent(bundle.path)
+      return "Installed \(bundle.name)"
+    }
+  }
+
+  private func startRecording() {
+    guard let device = bootedSelection() else { return }
+    if let session = recorder.session {
+      appendOutput("Already recording to \(session.path)", error: true)
+      return
+    }
+    let recorder = self.recorder
+    let settings = state.settings
+    let path = settings.recordingDestination(fileName: CaptureName.recording())
+    startJob("Starting recording") {
+      let session = try recorder.start(device: device, path: path)
+      return .message("Recording \(session.deviceName) to \(session.path)")
+    }
+  }
+
+  private func stopRecording() {
+    guard recorder.isRecording else {
+      appendOutput("No recording is running", error: true)
+      return
+    }
+    let recorder = self.recorder
+    startJob("Finalizing recording") {
+      let session = try recorder.stop()
+      let seconds = Int(session.duration().rounded())
+      return .message("Saved \(seconds)s recording to \(session.path)")
+    }
+  }
+
+  private func setDirectory(_ key: SettingsKey, to value: String) {
+    let store = settingsStore
+    startJob("Saving preference") {
+      let resolved = try store.set(key, to: value)
+      return .reload("\(key.rawValue) is now \(resolved)")
+    }
+  }
+
+  private func savePath(name: String, path: String) {
+    let store = pathStore
+    startJob("Saving \(name)") {
+      try store.add(name: name, path: path, force: true)
+      return .reload("Saved build \(name) → \(try PathStore.validate(path))")
+    }
+  }
+
+  private func exportLinks(to path: String) {
+    let store = linkStore
+    startJob("Exporting deep links") {
+      let destination = try store.export(to: path)
+      let count = try store.load().count
+      return .message("Exported \(count) deep link\(count == 1 ? "" : "s") to \(destination)")
+    }
+  }
+
+  private func importLinks(from path: String) {
+    let store = linkStore
+    startJob("Importing deep links") {
+      // Existing names are kept: an import should never silently overwrite
+      // something the person already saved.
+      let summary = try store.importLinks(fromFileAt: path, strategy: .skipExisting)
+      var details = summary.details
+      if !summary.skipped.isEmpty {
+        details.append("edit a saved link with e to change it by hand")
+      }
+      return .reload("Imported: \(summary.headline)", details: details)
+    }
+  }
+
+  /// Starts opening a deep link, collecting whatever it still needs first.
+  ///
+  /// A finished URL opens straight away. A template asks for the app that
+  /// supplies `$scheme`, then for each parameter in turn.
+  private func beginLink(name: String, url: String, apps scopedApps: [String]?) {
+    guard bootedSelection() != nil else { return }
+    let template = LinkTemplate.parse(url)
+    let link = SavedLink(name: name, url: url, apps: scopedApps)
+
+    guard template.isTemplate else {
+      openResolvedLink(url, linkName: name, app: nil)
+      return
+    }
+
+    let memory = valueStore.memory(for: name.isEmpty ? LinkValueStore.adHocKey : name)
+    var pending = PendingLink(
+      linkName: name,
+      template: template,
+      values: [:],
+      remaining: template.parameters
+    )
+
+    if template.requiresScheme {
+      let candidates = LinkResolver.candidates(
+        for: link, apps: state.apps, installed: state.installedApps)
+      guard !candidates.isEmpty else {
+        appendReport(
+          SimctlBuddyError.noSchemeForLink(name.isEmpty ? url : name).localizedDescription,
+          details: [], error: true)
+        return
+      }
+      guard
+        let automatic = LinkResolver.automaticChoice(from: candidates, remembered: memory.app)
+      else {
+        // Genuinely ambiguous, so ask which app rather than guessing a market.
+        state.pendingLink = pending
+        openLinkAppPicker(candidates)
+        return
+      }
+      pending.app = automatic
+    }
+
+    state.pendingLink = pending
+    advanceLink()
+  }
+
+  private func openLinkAppPicker(_ candidates: [SavedApp]) {
+    state.picker = TUIPicker(
+      purpose: .linkApp,
+      title: "Open on which app?",
+      footnote: "Installed apps first · $scheme comes from the app",
+      loadingMessage: "Reading saved apps",
+      options: candidates.map {
+        TUIPickerOption(
+          value: $0.bundleIdentifier,
+          label: $0.name,
+          detail: $0.scheme.map { scheme in "\(scheme)://" } ?? $0.bundleIdentifier
+        )
+      },
+      isLoading: false
+    )
+  }
+
+  private func chooseLinkApp(_ bundleIdentifier: String) {
+    guard var pending = state.pendingLink else { return }
+    pending.app = state.apps.first {
+      $0.bundleIdentifier.caseInsensitiveCompare(bundleIdentifier) == .orderedSame
+    }
+    state.pendingLink = pending
+    advanceLink()
+  }
+
+  /// Asks for the next parameter, or opens the link once nothing is left.
+  private func advanceLink() {
+    guard let pending = state.pendingLink else { return }
+    if let next = pending.remaining.first {
+      beginPrompt(
+        .linkParameter(link: pending.linkName, parameter: next.name),
+        label: "Value for $\(next.name)",
+        value: valueStore.startingValue(for: next, link: pending.memoryKey)
+      )
+      return
+    }
+
+    state.pendingLink = nil
+    do {
+      let url = try pending.template.render(
+        scheme: pending.app?.scheme, values: pending.values)
+      try? valueStore.remember(
+        values: pending.values,
+        app: pending.app?.bundleIdentifier,
+        for: pending.memoryKey
+      )
+      openResolvedLink(url, linkName: pending.linkName, app: pending.app)
+    } catch {
+      appendReport(error.localizedDescription, details: [], error: true)
+    }
+  }
+
+  private func fillLinkParameter(_ name: String, with value: String) {
+    guard var pending = state.pendingLink else { return }
+    pending.values[name] = value
+    pending.remaining.removeAll { $0.name == name }
+    state.pendingLink = pending
+    advanceLink()
+  }
+
+  private func openResolvedLink(_ url: String, linkName: String, app: SavedApp?) {
+    let label = linkName.isEmpty ? url : linkName
+    let via = app.map { " via \($0.name)" } ?? ""
+    onBootedDevice("Opening \(label)", capability: .openURL) { device, service in
+      try service.openURL(url, device: device)
+      return "Opened \(label) → \(url)\(via)"
     }
   }
 
   private func launch(_ bundleIdentifier: String) {
-    onBootedDevice("Launching \(bundleIdentifier)") { device, client in
-      let result = try client.simctl(["launch", device.udid, bundleIdentifier])
+    onBootedDevice("Launching \(bundleIdentifier)", capability: .launch) { device, service in
+      let result = try service.launch(bundleIdentifier, device: device)
       return result.isEmpty
         ? "Launched \(bundleIdentifier)" : "Launched \(bundleIdentifier) · \(result)"
     }
   }
 
   private func terminate(_ bundleIdentifier: String) {
-    onBootedDevice("Terminating \(bundleIdentifier)") { device, client in
-      _ = try client.simctl(["terminate", device.udid, bundleIdentifier])
+    onBootedDevice("Terminating \(bundleIdentifier)", capability: .terminate) { device, service in
+      try service.terminate(bundleIdentifier, device: device)
       return "Terminated \(bundleIdentifier)"
     }
   }
@@ -395,8 +725,9 @@ public final class SimulatorTUI {
     _ action: TUIPrivacyAction, service: String, bundleIdentifier: String
   ) {
     let verb = action == .grant ? "Granted" : "Revoked"
-    onBootedDevice("\(action.rawValue.capitalized)ing \(service)") { device, client in
-      _ = try client.simctl([
+    onBootedDevice("\(action.rawValue.capitalized)ing \(service)", capability: .privacy) {
+      device, devices in
+      _ = try devices.simctl.simctl([
         "privacy", device.udid, action.rawValue, service, bundleIdentifier,
       ])
       return "\(verb) \(service) for \(bundleIdentifier)"
@@ -404,8 +735,9 @@ public final class SimulatorTUI {
   }
 
   private func resetPrivacy(_ bundleIdentifier: String) {
-    onBootedDevice("Resetting privacy for \(bundleIdentifier)") { device, client in
-      _ = try client.simctl(["privacy", device.udid, "reset", "all", bundleIdentifier])
+    onBootedDevice("Resetting privacy for \(bundleIdentifier)", capability: .privacy) {
+      device, service in
+      _ = try service.simctl.simctl(["privacy", device.udid, "reset", "all", bundleIdentifier])
       return "Reset privacy permissions for \(bundleIdentifier)"
     }
   }
@@ -446,20 +778,30 @@ public final class SimulatorTUI {
     switch key {
     case .escape:
       state.prompt = nil
+      state.pendingLink = nil
       appendOutput("Cancelled")
     case .enter:
       state.prompt = nil
       submit(prompt)
+    case .tab:
+      // Tab means completion in a path field and nothing anywhere else.
+      guard prompt.supportsCompletion else { break }
+      prompt.complete(using: completer)
+      state.prompt = prompt
     case .backspace:
       if !prompt.value.isEmpty { prompt.value.removeLast() }
+      prompt.clearCompletion()
       state.prompt = prompt
     case .clearLine:
       prompt.value = ""
+      prompt.clearCompletion()
       state.prompt = prompt
     case .text(let value):
       prompt.value.append(value)
+      // A stale candidate list would describe text that is no longer there.
+      prompt.clearCompletion()
       state.prompt = prompt
-    case .up, .down, .left, .right, .tab, .interrupt:
+    case .up, .down, .left, .right, .interrupt:
       break
     }
   }
@@ -472,11 +814,11 @@ public final class SimulatorTUI {
     case .addSavedLink:
       beginPrompt(.savedLinkName, label: "Name")
     case .installApp:
-      beginPrompt(.installApp, label: "Path to .app")
+      openInstallPicker()
     case .launchApp:
       openBundlePicker(.launchApp, title: "Launch app")
     case .terminateApp:
-      openBundlePicker(.terminateApp, title: "Terminate app")
+      openTerminatePicker()
     case .clipboard:
       beginPrompt(.clipboard, label: "Text to copy")
     case .location:
@@ -489,6 +831,20 @@ public final class SimulatorTUI {
       openBundlePicker(.privacyResetBundle, title: "Reset privacy · pick an app")
     case .saveApp:
       openBundlePicker(.saveApp, title: "Save app bundle ID")
+    case .savePath:
+      beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
+    case .screenshotDirectory:
+      beginPrompt(
+        .screenshotDirectory, label: "Folder for screenshots",
+        value: state.settings.screenshotDirectory ?? "")
+    case .recordingDirectory:
+      beginPrompt(
+        .recordingDirectory, label: "Folder for recordings",
+        value: state.settings.recordingDirectory ?? "")
+    case .exportLinks:
+      beginPrompt(.exportLinks, label: "Export to file")
+    case .importLinks:
+      beginPrompt(.importLinks, label: "Import from file")
     default:
       execute(action)
     }
@@ -504,8 +860,13 @@ public final class SimulatorTUI {
       beginPrompt(
         .confirmRemoveSavedApp(name: app.name),
         label: "Delete “\(app.name)” → \(app.bundleIdentifier)?")
+    case .savedPath(let saved):
+      beginPrompt(
+        .confirmRemoveSavedPath(name: saved.name),
+        label: "Delete “\(saved.name)” → \(saved.path)?")
     default:
-      appendOutput("Select a saved deep link or app, then press d to delete it", error: true)
+      appendOutput(
+        "Select a saved deep link, app, or build, then press d to delete it", error: true)
     }
   }
 
@@ -521,8 +882,11 @@ public final class SimulatorTUI {
       beginPrompt(
         .editSavedAppBundle(name: app.name), label: "Bundle identifier",
         value: app.bundleIdentifier)
+    case .savedPath(let saved):
+      beginPrompt(.editSavedPath(name: saved.name), label: "Path to .app", value: saved.path)
     default:
-      appendOutput("Select a saved deep link or app, then press e to edit it", error: true)
+      appendOutput(
+        "Select a saved deep link, app, or build, then press e to edit it", error: true)
     }
   }
 
@@ -535,10 +899,7 @@ public final class SimulatorTUI {
 
     switch prompt.kind {
     case .deepLink:
-      onBootedDevice("Opening deep link") { device, client in
-        try client.openURL(value, device: device)
-        return "Opened \(value)"
-      }
+      beginLink(name: "", url: value, apps: nil)
     case .savedLinkName:
       beginPrompt(.savedLinkURL(name: value), label: "URL")
     case .savedLinkURL(let name), .editSavedLinkURL(let name):
@@ -548,28 +909,25 @@ public final class SimulatorTUI {
         return .reload("Saved deep link \(name) → \(value)")
       }
     case .installApp:
-      onBootedDevice("Installing app") { device, client in
-        let path = try client.validateAppBundle(at: value)
-        _ = try client.simctl(["install", device.udid, path])
-        return "Installed \(URL(fileURLWithPath: path).lastPathComponent)"
-      }
+      install(path: value)
     case .launchApp:
       launch(value)
     case .terminateApp:
       terminate(value)
     case .clipboard:
-      onBootedDevice("Copying to clipboard") { device, client in
-        _ = try client.simctl(["pbcopy", device.udid], standardInput: Data(value.utf8))
-        return "Copied text to simulator clipboard"
+      onBootedDevice("Copying to clipboard", capability: .clipboard) { device, service in
+        try service.copyToClipboard(value, device: device)
+        return "Copied text to the \(device.kind.label.lowercased()) clipboard"
       }
     case .location:
       setLocation(value)
     case .pushBundle:
       beginPrompt(.pushPayload(bundleIdentifier: value), label: "Path to .apns payload")
     case .pushPayload(let bundleIdentifier):
-      onBootedDevice("Sending push to \(bundleIdentifier)") { device, client in
-        let path = try client.validateFile(at: value)
-        _ = try client.simctl(["push", device.udid, bundleIdentifier, path])
+      onBootedDevice("Sending push to \(bundleIdentifier)", capability: .push) {
+        device, service in
+        let path = try service.simctl.validateFile(at: value)
+        _ = try service.simctl.simctl(["push", device.udid, bundleIdentifier, path])
         return "Sent push notification to \(bundleIdentifier)"
       }
     case .privacyService(let action):
@@ -592,23 +950,57 @@ public final class SimulatorTUI {
         beginPrompt(.savedAppName(bundleIdentifier: value), label: "Name for this app")
         return
       }
-      saveApp(name: value, bundleIdentifier: bundleIdentifier)
+      beginPrompt(
+        .savedAppScheme(name: value, bundleIdentifier: bundleIdentifier),
+        label: "URL scheme for \(value), or leave empty")
     case .editSavedAppBundle(let name):
-      saveApp(name: name, bundleIdentifier: value)
+      let existing = state.apps.first { $0.name == name }?.scheme
+      saveApp(name: name, bundleIdentifier: value, scheme: existing)
     case .confirmRemoveSavedApp(let name):
       let store = appStore
       startJob("Deleting \(name)") {
         try store.remove(name: name)
         return .reload("Deleted saved app \(name)")
       }
+    case .savedPathValue(let name):
+      // Reached with an empty name when the path was typed first.
+      guard !name.isEmpty else {
+        beginPrompt(.savedPathName(path: value), label: "Name for this build")
+        return
+      }
+      savePath(name: name, path: value)
+    case .savedPathName(let path):
+      savePath(name: value, path: path)
+    case .editSavedPath(let name):
+      savePath(name: name, path: value)
+    case .confirmRemoveSavedPath(let name):
+      let store = pathStore
+      startJob("Deleting \(name)") {
+        try store.remove(name: name)
+        return .reload("Deleted saved build \(name)")
+      }
+    case .screenshotDirectory:
+      setDirectory(.screenshotDirectory, to: value)
+    case .recordingDirectory:
+      setDirectory(.recordingDirectory, to: value)
+    case .exportLinks:
+      exportLinks(to: value)
+    case .importLinks:
+      importLinks(from: value)
+    case .savedAppScheme(let name, let bundleIdentifier):
+      saveApp(name: name, bundleIdentifier: bundleIdentifier, scheme: value)
+    case .linkParameter(_, let parameter):
+      fillLinkParameter(parameter, with: value)
     }
   }
 
-  private func saveApp(name: String, bundleIdentifier: String) {
+  private func saveApp(name: String, bundleIdentifier: String, scheme: String? = nil) {
     let store = appStore
     startJob("Saving \(name)") {
-      try store.add(name: name, bundleIdentifier: bundleIdentifier, force: true)
-      return .reload("Saved app \(name) → \(bundleIdentifier)")
+      try store.add(
+        name: name, bundleIdentifier: bundleIdentifier, scheme: scheme, force: true)
+      let suffix = (scheme?.isEmpty ?? true) ? "" : "  (\(scheme!)://)"
+      return .reload("Saved app \(name) → \(bundleIdentifier)\(suffix)")
     }
   }
 
@@ -618,14 +1010,21 @@ public final class SimulatorTUI {
       launch(app.bundleIdentifier)
     case .saveApp:
       openBundlePicker(.saveApp, title: "Save app bundle ID")
+    case .savedPath(let saved):
+      install(path: saved.path)
+    case .savePath:
+      beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
     case .savedLink(let link):
-      onBootedDevice("Opening \(link.name)") { device, client in
-        try client.openURL(link.url, device: device)
-        return "Opened \(link.name) → \(link.url)"
-      }
+      beginLink(name: link.name, url: link.url, apps: link.apps)
     case .boot:
       guard let selected = state.selectedDevice else {
-        appendOutput("No simulator selected", error: true)
+        appendOutput("No device selected", error: true)
+        return
+      }
+      guard selected.supports(.boot) else {
+        appendOutput(
+          SimctlBuddyError.unsupportedAction(.boot, kind: selected.kind).localizedDescription,
+          error: true)
         return
       }
       let client = self.client
@@ -634,34 +1033,37 @@ public final class SimulatorTUI {
         return .reload("\(device.name) is ready")
       }
     case .shutdown:
-      onBootedDevice("Shutting down", reload: true) { device, client in
-        _ = try client.simctl(["shutdown", device.udid])
+      onBootedDevice("Shutting down", reload: true, capability: .shutdown) { device, service in
+        _ = try service.simctl.simctl(["shutdown", device.udid])
         return "Shut down \(device.name)"
       }
     case .screenshot:
-      onBootedDevice("Capturing screenshot") { device, client in
-        let name = "simbuddy-\(Self.timestamp()).png"
-        let path = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-          .appendingPathComponent(name).path
-        _ = try client.simctl(["io", device.udid, "screenshot", path])
-        return "Screenshot saved to \(path)"
+      let destination = state.settings.screenshotDestination(fileName: CaptureName.screenshot())
+      onBootedDevice("Capturing screenshot", capability: .screenshot) { device, service in
+        // The configured folder may have been moved since it was set.
+        try FileManager.default.createDirectory(
+          at: URL(fileURLWithPath: destination).deletingLastPathComponent(),
+          withIntermediateDirectories: true
+        )
+        try service.screenshot(to: destination, device: device)
+        return "Screenshot saved to \(destination)"
       }
+    case .startRecording:
+      startRecording()
+    case .stopRecording:
+      stopRecording()
     case .appearanceDark:
       setAppearance("dark")
     case .appearanceLight:
       setAppearance("light")
     case .cleanStatusBar:
-      onBootedDevice("Applying status bar") { device, client in
-        _ = try client.simctl([
-          "status_bar", device.udid, "override", "--time", "9:41",
-          "--batteryState", "charged", "--batteryLevel", "100",
-          "--wifiBars", "3", "--cellularBars", "4",
-        ])
+      onBootedDevice("Applying status bar", capability: .statusBar) { device, service in
+        try service.applyCleanStatusBar(device: device)
         return "Applied clean 9:41 status bar"
       }
     case .clearStatusBar:
-      onBootedDevice("Clearing status bar") { device, client in
-        _ = try client.simctl(["status_bar", device.udid, "clear"])
+      onBootedDevice("Clearing status bar", capability: .statusBar) { device, service in
+        try service.clearStatusBar(device: device)
         return "Cleared status-bar override"
       }
     case .listApps:
@@ -672,6 +1074,14 @@ public final class SimulatorTUI {
         }
         return .report("\(identifiers.count) apps installed", details: identifiers)
       }
+    case .listRunningApps:
+      onBootedDeviceReporting("Reading running apps") { device, client in
+        let identifiers = try client.runningBundleIdentifiers(device: device)
+        guard !identifiers.isEmpty else {
+          return .message("No apps are running on \(device.name)")
+        }
+        return .report("\(identifiers.count) apps running", details: identifiers)
+      }
     case .push:
       beginPrompt(.pushBundle, label: "Bundle identifier")
     case .privacy(let privacyAction):
@@ -679,36 +1089,36 @@ public final class SimulatorTUI {
     case .privacyReset:
       beginPrompt(.privacyResetBundle, label: "Bundle identifier")
     case .clipboardPaste:
-      onBootedDevice("Reading simulator clipboard") { device, client in
-        let contents = try client.simctl(["pbpaste", device.udid])
-        guard !contents.isEmpty else { return "The simulator clipboard is empty" }
+      onBootedDevice("Reading clipboard", capability: .clipboard) { device, service in
+        let contents = try service.readClipboard(device: device)
+        guard !contents.isEmpty else { return "The clipboard is empty" }
         // A whole clipboard can be enormous; keep the log usable.
         let limit = 200
         let shown =
           contents.count > limit ? String(contents.prefix(limit)) + "…" : contents
-        return "Simulator clipboard: \(shown)"
+        return "Clipboard: \(shown)"
       }
     case .locationClear:
-      onBootedDevice("Clearing location") { device, client in
-        _ = try client.simctl(["location", device.udid, "clear"])
-        return "Cleared simulated location on \(device.name)"
+      onBootedDevice("Clearing location", capability: .location) { device, service in
+        try service.clearLocation(device: device)
+        return "Cleared the location override on \(device.name)"
       }
     case .doctor:
-      let client = self.client
+      let service = self.service
       startJob("Running diagnostics") {
-        .report("Diagnostics passed", details: try client.diagnostics())
+        .report("Diagnostics passed", details: try service.diagnostics())
       }
     case .refresh:
       reloadEverything(message: "Refreshed devices")
     case .openDeepLink, .addSavedLink, .installApp, .launchApp, .terminateApp, .clipboard,
-      .location:
+      .location, .screenshotDirectory, .recordingDirectory, .exportLinks, .importLinks:
       break
     }
   }
 
   private func setAppearance(_ appearance: String) {
-    onBootedDevice("Switching appearance") { device, client in
-      _ = try client.simctl(["ui", device.udid, "appearance", appearance])
+    onBootedDevice("Switching appearance", capability: .appearance) { device, service in
+      try service.setAppearance(appearance, device: device)
       return "Switched to \(appearance) appearance"
     }
   }
@@ -726,9 +1136,8 @@ public final class SimulatorTUI {
       return
     }
 
-    onBootedDevice("Setting location") { device, client in
-      try client.validateCoordinate(latitude: latitude, longitude: longitude)
-      _ = try client.simctl(["location", device.udid, "set", "\(latitude),\(longitude)"])
+    onBootedDevice("Setting location", capability: .location) { device, service in
+      try service.setLocation(latitude: latitude, longitude: longitude, device: device)
       return "Set location to \(latitude),\(longitude)"
     }
   }
@@ -742,14 +1151,25 @@ public final class SimulatorTUI {
     startJob(label) { try operation(device, client) }
   }
 
-  private func bootedSelection() -> SimulatorDevice? {
+  private func bootedSelection() -> Device? {
     guard let device = state.selectedDevice else {
-      appendOutput("No simulator selected", error: true)
+      appendOutput("No device selected", error: true)
       return nil
     }
-    guard device.isBooted else {
+    if let reason = device.unreadyReason {
+      appendOutput(reason, error: true)
+      return nil
+    }
+    return device
+  }
+
+  /// Checks the highlighted device can do this before starting any work.
+  private func selection(for capability: DeviceCapability) -> Device? {
+    guard let device = bootedSelection() else { return nil }
+    guard device.supports(capability) else {
       appendOutput(
-        "\(device.name) is shut down. Choose “Boot / show simulator” first.", error: true)
+        SimctlBuddyError.unsupportedAction(capability, kind: device.kind).localizedDescription,
+        error: true)
       return nil
     }
     return device
@@ -758,12 +1178,14 @@ public final class SimulatorTUI {
   private func onBootedDevice(
     _ label: String,
     reload: Bool = false,
-    _ operation: @escaping @Sendable (SimulatorDevice, SimctlClient) throws -> String
+    capability: DeviceCapability? = nil,
+    _ operation: @escaping @Sendable (Device, DeviceService) throws -> String
   ) {
-    guard let device = bootedSelection() else { return }
-    let client = self.client
+    guard let device = capability.map({ selection(for: $0) }) ?? bootedSelection()
+    else { return }
+    let service = self.service
     startJob(label) {
-      let message = try operation(device, client)
+      let message = try operation(device, service)
       return reload ? .reload(message) : .message(message)
     }
   }
@@ -782,9 +1204,4 @@ public final class SimulatorTUI {
     state.output = Array(state.output.prefix(60))
   }
 
-  private static func timestamp() -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmmss"
-    return formatter.string(from: Date())
-  }
 }

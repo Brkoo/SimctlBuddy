@@ -12,7 +12,7 @@ struct SimctlBuddy: ParsableCommand {
       Run without arguments for the interactive terminal UI. Scriptable commands
       and reusable deep-link aliases are also available.
       """,
-    version: "0.2.2",
+    version: "0.3.0",
     subcommands: [
       Interactive.self,
       Devices.self,
@@ -25,13 +25,16 @@ struct SimctlBuddy: ParsableCommand {
       Terminate.self,
       Apps.self,
       Bundles.self,
+      Paths.self,
       Screenshot.self,
+      Record.self,
       Clipboard.self,
       Push.self,
       Location.self,
       Appearance.self,
       Privacy.self,
       StatusBar.self,
+      Config.self,
       Doctor.self,
     ],
     defaultSubcommand: Interactive.self
@@ -52,13 +55,128 @@ struct Interactive: ParsableCommand {
 struct DeviceOption: ParsableArguments {
   @Option(
     name: [.short, .long],
-    help: "Simulator name, partial name, or UDID. Defaults to the only booted simulator."
+    help: "Device name, partial name, or identifier. Defaults to the only ready device."
   )
   var device: String?
+
+  @Flag(help: "Only consider simulators.")
+  var simulatorsOnly = false
+
+  @Flag(help: "Only consider physical devices.")
+  var devicesOnly = false
+
+  /// Physical devices are opt-in.
+  ///
+  /// With no `--device` and no kind flag, only simulators are considered, so
+  /// plugging a phone in cannot silently make every command ambiguous — or
+  /// worse, aim an install at hardware.
+  var kinds: Set<DeviceKind> {
+    if simulatorsOnly { return [.simulator] }
+    if devicesOnly { return [.physical] }
+    return device == nil ? [.simulator] : Set(DeviceKind.allCases)
+  }
+
+  func validate() throws {
+    if simulatorsOnly && devicesOnly {
+      throw ValidationError("Pass either --simulators-only or --devices-only, not both.")
+    }
+  }
+
+  /// Resolves the target across both kinds.
+  func resolve(
+    _ service: DeviceService = DeviceService(),
+    requireBooted: Bool = true
+  ) throws -> Device {
+    try service.resolveDevice(device, requireBooted: requireBooted, kinds: kinds)
+  }
 }
 
 private func printSuccess(_ message: String) {
   print("✓ \(message)")
+}
+
+/// Progress for long-running commands. stderr is unbuffered, so this appears as
+/// it happens even when stdout is being piped somewhere.
+private func note(_ message: String) {
+  FileHandle.standardError.write(Data("\(message)\n".utf8))
+}
+
+/// Options every command that opens a deep link shares.
+struct LinkFillOptions: ParsableArguments {
+  @Option(
+    name: .customLong("app"),
+    help: "Saved app to open the link on, by name or bundle identifier. Supplies $scheme."
+  )
+  var app: String?
+
+  @Option(
+    name: .customLong("set"),
+    help: "Give a parameter a value, as name=value. Repeatable."
+  )
+  var assignments: [String] = []
+}
+
+/// Turns a template plus `--app` and `--set` into a URL, or explains what is
+/// missing. Scripts get an error rather than a prompt, since there may be no one
+/// there to answer.
+///
+/// `installed` is only consulted when several saved apps could open the link,
+/// because it costs a call to the device.
+private func resolveLink(
+  name: String,
+  url: String,
+  options: LinkFillOptions,
+  apps: [SavedApp],
+  scopedApps: [String]? = nil,
+  rememberedApp: String? = nil,
+  installed: () throws -> [String] = { [] }
+) throws -> (url: String, app: SavedApp?) {
+  let template = LinkTemplate.parse(url)
+  let values = try LinkResolver.parseAssignments(options.assignments)
+  let link = SavedLink(name: name, url: url, apps: scopedApps)
+
+  var chosen: SavedApp?
+  if let selector = options.app {
+    let app = try LinkResolver.app(matching: selector, in: apps)
+    guard link.appliesTo(bundleIdentifier: app.bundleIdentifier) else {
+      throw ValidationError(
+        "\(app.name) is not one of the apps this link is for: "
+          + (scopedApps ?? []).joined(separator: ", "))
+    }
+    chosen = app
+  } else if template.requiresScheme {
+    var candidates = LinkResolver.candidates(for: link, apps: apps)
+    if candidates.count > 1 {
+      // Prefer an app that is actually on the device: opening a market's link
+      // on a simulator that does not have that market installed only fails.
+      let present = Set(try installed().map { $0.lowercased() })
+      let onDevice = candidates.filter { present.contains($0.bundleIdentifier.lowercased()) }
+      if !onDevice.isEmpty { candidates = onDevice }
+    }
+    guard let single = LinkResolver.automaticChoice(from: candidates, remembered: rememberedApp)
+    else {
+      if candidates.isEmpty { throw SimctlBuddyError.noSchemeForLink(name) }
+      throw ValidationError(
+        "\(candidates.count) saved apps could open this link. Pass --app with one of: "
+          + candidates.map(\.name).joined(separator: ", "))
+    }
+    chosen = single
+  }
+
+  if template.requiresScheme, let chosen, chosen.scheme == nil {
+    throw SimctlBuddyError.appHasNoScheme(chosen.name)
+  }
+
+  let missing = template.unresolvedParameters(given: values)
+  if !missing.isEmpty {
+    throw ValidationError(
+      "This link needs a value for "
+        + missing.map { "$\($0.name)" }.joined(separator: ", ")
+        + ". Pass "
+        + missing.map { "--set \($0.name)=<value>" }.joined(separator: " "))
+  }
+
+  return (try template.render(scheme: chosen?.scheme, values: values), chosen)
 }
 
 struct Devices: ParsableCommand {
@@ -66,14 +184,24 @@ struct Devices: ParsableCommand {
     abstract: "List available iOS Simulators."
   )
 
-  @Flag(help: "Only show booted simulators.")
+  @Flag(help: "Only show booted simulators and connected devices.")
   var booted = false
 
   @Flag(help: "Print machine-readable JSON.")
   var json = false
 
+  @Flag(help: "Only show simulators.")
+  var simulatorsOnly = false
+
+  @Flag(help: "Only show physical devices.")
+  var devicesOnly = false
+
   func run() throws {
-    var devices = try SimctlClient().devices()
+    var kinds = Set(DeviceKind.allCases)
+    if simulatorsOnly { kinds = [.simulator] }
+    if devicesOnly { kinds = [.physical] }
+    // Asking specifically for devices should report why none appeared.
+    var devices = try DeviceService().devices(kinds: kinds, strict: devicesOnly)
     if booted { devices = devices.filter(\.isBooted) }
 
     if json {
@@ -84,7 +212,7 @@ struct Devices: ParsableCommand {
     }
 
     guard !devices.isEmpty else {
-      print("No available iOS Simulators found.")
+      print("No devices found.")
       return
     }
 
@@ -92,15 +220,17 @@ struct Devices: ParsableCommand {
     let runtimeWidth = max(7, devices.map(\.runtimeName.count).max() ?? 7)
     print(
       "\("DEVICE".padding(toLength: nameWidth, withPad: " ", startingAt: 0))  "
-        + "\("RUNTIME".padding(toLength: runtimeWidth, withPad: " ", startingAt: 0))  STATE     UDID"
+        + "\("RUNTIME".padding(toLength: runtimeWidth, withPad: " ", startingAt: 0))  KIND       "
+        + "STATE        IDENTIFIER"
     )
     for device in devices {
       let marker = device.isBooted ? "●" : "○"
       let name = device.name.padding(toLength: nameWidth, withPad: " ", startingAt: 0)
       let runtime = device.runtimeName.padding(toLength: runtimeWidth, withPad: " ", startingAt: 0)
-      print(
-        "\(name)  \(runtime)  \(marker) \(device.state.padding(toLength: 8, withPad: " ", startingAt: 0)) \(device.udid)"
-      )
+      let kind = device.kind.label.padding(toLength: 9, withPad: " ", startingAt: 0)
+      let state = device.state.padding(toLength: 12, withPad: " ", startingAt: 0)
+      let wireless = device.isWireless ? " (wireless)" : ""
+      print("\(name)  \(runtime)  \(kind)  \(marker) \(state) \(device.udid)\(wireless)")
     }
   }
 }
@@ -117,6 +247,14 @@ struct Boot: ParsableCommand {
   var headless = false
 
   func run() throws {
+    // Only simulators boot, so a phone must not be matched here by accident.
+    if let device {
+      let service = DeviceService()
+      let target = try? service.resolveDevice(device, requireBooted: false)
+      if let target, target.kind == .physical {
+        throw SimctlBuddyError.unsupportedAction(.boot, kind: .physical)
+      }
+    }
     let simulator = try SimctlClient().boot(selector: device, openSimulator: !headless)
     printSuccess("\(simulator.name) is ready [\(simulator.udid)]")
   }
@@ -136,7 +274,9 @@ struct Shutdown: ParsableCommand {
       _ = try client.simctl(["shutdown", "all"])
       printSuccess("Shut down all simulators")
     } else {
-      let device = try client.resolveDevice(target.device)
+      let service = DeviceService()
+      let device = try target.resolve(service)
+      try service.require(.shutdown, on: device)
       _ = try client.simctl(["shutdown", device.udid])
       printSuccess("Shut down \(device.name)")
     }
@@ -149,23 +289,34 @@ struct Open: ParsableCommand {
     abstract: "Open a universal link or custom URL scheme."
   )
 
-  @Argument(help: "URL such as myapp://profile/42 or https://example.com/path.")
+  @Argument(help: "URL, or a template such as $scheme://profile/$id.")
   var url: String
 
   @OptionGroup var target: DeviceOption
+  @OptionGroup var fill: LinkFillOptions
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    try client.openURL(url, device: device)
-    printSuccess("Opened \(url) on \(device.name)")
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    let resolved = try resolveLink(
+      name: url,
+      url: url,
+      options: fill,
+      apps: try AppStore().load(),
+      installed: { try service.installedBundleIdentifiers(device: device) }
+    )
+    try service.openURL(resolved.url, device: device)
+    printSuccess("Opened \(resolved.url) on \(device.name)")
   }
 }
 
 struct Links: ParsableCommand {
   static let configuration = CommandConfiguration(
     abstract: "Save and run reusable deep links.",
-    subcommands: [LinksList.self, LinksAdd.self, LinksRun.self, LinksRemove.self],
+    subcommands: [
+      LinksList.self, LinksAdd.self, LinksRun.self, LinksRemove.self,
+      LinksExport.self, LinksImport.self,
+    ],
     defaultSubcommand: LinksList.self
   )
 }
@@ -182,7 +333,17 @@ struct LinksList: ParsableCommand {
     }
     let width = links.map(\.name.count).max() ?? 0
     for link in links {
-      print("\(link.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(link.url)")
+      let name = link.name.padding(toLength: width, withPad: " ", startingAt: 0)
+      var notes = [String]()
+      let template = link.template
+      if template.requiresScheme { notes.append("$scheme") }
+      let parameters = template.parameters
+      if !parameters.isEmpty {
+        notes.append(parameters.map { "$\($0.name)" }.joined(separator: " "))
+      }
+      if let apps = link.apps, !apps.isEmpty { notes.append(apps.joined(separator: " ")) }
+      let suffix = notes.isEmpty ? "" : "   [\(notes.joined(separator: " · "))]"
+      print("\(name)  \(link.url)\(suffix)")
     }
   }
 }
@@ -194,15 +355,32 @@ struct LinksAdd: ParsableCommand {
   @Argument(help: "Short memorable name.")
   var name: String
 
-  @Argument(help: "Deep link URL.")
+  @Argument(help: "Deep link URL, or a template. See `simbuddy links add --help`.")
   var url: String
+
+  @Option(
+    name: .customLong("app"),
+    help: "Restrict this link to a saved app, by bundle identifier. Repeatable."
+  )
+  var apps: [String] = []
 
   @Flag(help: "Replace an existing link with the same name.")
   var force = false
 
   func run() throws {
-    try LinkStore().add(name: name, url: url, force: force)
+    try LinkStore().add(name: name, url: url, apps: apps, force: force)
+    let template = LinkTemplate.parse(url)
     printSuccess("Saved \(name) → \(url)")
+    if template.requiresScheme {
+      print("  $scheme is filled in from the app the link is opened on.")
+    }
+    for parameter in template.parameters {
+      let suffix = parameter.defaultValue.map { " (default \($0))" } ?? ""
+      print("  $\(parameter.name) is asked for when the link runs\(suffix)")
+    }
+    if !apps.isEmpty {
+      print("  offered only for: \(apps.joined(separator: ", "))")
+    }
   }
 }
 
@@ -214,13 +392,32 @@ struct LinksRun: ParsableCommand {
   var name: String
 
   @OptionGroup var target: DeviceOption
+  @OptionGroup var fill: LinkFillOptions
 
   func run() throws {
     let link = try LinkStore().link(named: name)
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    try client.openURL(link.url, device: device)
-    printSuccess("Opened \(name) → \(link.url) on \(device.name)")
+    let store = LinkValueStore()
+    let service = DeviceService()
+    let device = try target.resolve(service)
+
+    let resolved = try resolveLink(
+      name: link.name,
+      url: link.url,
+      options: fill,
+      apps: try AppStore().load(),
+      scopedApps: link.apps,
+      // Only a hint: it still has to be an app this link applies to.
+      rememberedApp: store.memory(for: link.name).app,
+      installed: { try service.installedBundleIdentifiers(device: device) }
+    )
+    try service.openURL(resolved.url, device: device)
+    try? store.remember(
+      values: try LinkResolver.parseAssignments(fill.assignments),
+      app: resolved.app?.bundleIdentifier,
+      for: link.name
+    )
+    let via = resolved.app.map { " via \($0.name)" } ?? ""
+    printSuccess("Opened \(name) → \(resolved.url)\(via) on \(device.name)")
   }
 }
 
@@ -237,20 +434,219 @@ struct LinksRemove: ParsableCommand {
   }
 }
 
+struct LinksExport: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "export",
+    abstract: "Write saved deep links to a file, or to stdout.",
+    discussion: """
+      The exported file has the same shape as links.json, so it can be checked
+      into a repository and imported on another machine as-is.
+      """
+  )
+
+  @Argument(help: "Output file. Omit to print to stdout.", completion: .file(extensions: ["json"]))
+  var output: String?
+
+  func run() throws {
+    let store = LinkStore()
+    guard let output else {
+      print(String(decoding: try store.exportData(), as: UTF8.self), terminator: "")
+      return
+    }
+    let path = try store.export(to: output)
+    let count = try store.load().count
+    printSuccess("Exported \(count) deep link\(count == 1 ? "" : "s") to \(path)")
+  }
+}
+
+struct LinksImport: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "import",
+    abstract: "Merge deep links from a file into the saved set."
+  )
+
+  @Argument(help: "File to read.", completion: .file(extensions: ["json"]))
+  var input: String
+
+  @Flag(help: "Overwrite saved links when the names collide.")
+  var force = false
+
+  @Flag(help: "Replace every saved link with the contents of the file.")
+  var replaceAll = false
+
+  @Flag(help: "Print what would change without writing anything.")
+  var dryRun = false
+
+  func validate() throws {
+    if force && replaceAll {
+      throw ValidationError("Pass either --force or --replace-all, not both.")
+    }
+  }
+
+  func run() throws {
+    let strategy: ImportStrategy =
+      replaceAll ? .replaceAll : (force ? .replaceExisting : .skipExisting)
+    let store = LinkStore()
+
+    if dryRun {
+      // Run the merge against a throwaway copy so nothing is written.
+      let scratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("simbuddy-dry-\(UUID().uuidString).json")
+      defer { try? FileManager.default.removeItem(at: scratch) }
+      try store.exportData().write(to: scratch, options: .atomic)
+      let summary = try LinkStore(fileURL: scratch)
+        .importLinks(fromFileAt: input, strategy: strategy)
+      report(summary, prefix: "Would import")
+      return
+    }
+
+    let summary = try store.importLinks(fromFileAt: input, strategy: strategy)
+    report(summary, prefix: "Imported")
+  }
+
+  private func report(_ summary: ImportSummary, prefix: String) {
+    printSuccess("\(prefix): \(summary.headline)")
+    for line in summary.details { print("  \(line)") }
+    if !summary.skipped.isEmpty {
+      print("Pass --force to overwrite links that already exist.")
+    }
+  }
+}
+
 struct Install: ParsableCommand {
-  static let configuration = CommandConfiguration(abstract: "Install an .app bundle.")
+  static let configuration = CommandConfiguration(
+    abstract: "Install an .app bundle.",
+    discussion: """
+      Pass a path, or --saved to install a path remembered with `simbuddy paths
+      add`. Every successful install is remembered, so `simbuddy paths list`
+      shows what was installed recently.
+      """
+  )
 
   @Argument(help: "Path to a built .app bundle.", completion: .file(extensions: ["app"]))
-  var app: String
+  var app: String?
+
+  @Option(name: .customLong("saved"), help: "Install a saved path by name instead.")
+  var savedName: String?
+
+  @Option(name: .customLong("save-as"), help: "Remember this path under a name after installing.")
+  var saveAs: String?
 
   @OptionGroup var target: DeviceOption
 
+  func validate() throws {
+    if app == nil && savedName == nil {
+      throw ValidationError("Pass a path to an .app bundle, or --saved <name>.")
+    }
+    if app != nil && savedName != nil {
+      throw ValidationError("Pass either a path or --saved <name>, not both.")
+    }
+  }
+
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    let path = try client.validateAppBundle(at: app)
-    _ = try client.simctl(["install", device.udid, path])
-    printSuccess("Installed \(URL(fileURLWithPath: path).lastPathComponent) on \(device.name)")
+    let store = PathStore()
+    let requested = try savedName.map { try store.path(named: $0).path } ?? app ?? ""
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    let bundle = try service.install(appAt: requested, device: device)
+    try? store.recordRecent(bundle.path)
+    printSuccess("Installed \(bundle.name) on \(device.name)")
+    if let saveAs {
+      try store.add(name: saveAs, path: bundle.path, force: true)
+      printSuccess("Saved path \(saveAs) \u{2192} \(bundle.path)")
+    }
+  }
+}
+
+struct Paths: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Save and reuse paths to built .app bundles.",
+    subcommands: [PathsList.self, PathsAdd.self, PathsRemove.self, PathsForget.self],
+    defaultSubcommand: PathsList.self
+  )
+}
+
+struct PathsList: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "list", abstract: "List saved and recently installed app paths.")
+
+  @Flag(help: "Print machine-readable JSON.")
+  var json = false
+
+  func run() throws {
+    let book = try PathStore().load()
+
+    if json {
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+      print(String(decoding: try encoder.encode(book), as: UTF8.self))
+      return
+    }
+
+    guard !book.saved.isEmpty || !book.recent.isEmpty else {
+      print("No app paths yet. Add one with `simbuddy paths add <name> <path-to.app>`.")
+      return
+    }
+
+    if !book.saved.isEmpty {
+      print("SAVED")
+      let width = book.saved.map(\.name.count).max() ?? 0
+      for saved in book.saved {
+        let name = saved.name.padding(toLength: width, withPad: " ", startingAt: 0)
+        let marker = saved.exists ? " " : "!"
+        print("\(marker) \(name)  \(saved.path)")
+      }
+      if book.saved.contains(where: { !$0.exists }) {
+        print("! marks a path that is not on disk right now.")
+      }
+    }
+    if !book.recent.isEmpty {
+      if !book.saved.isEmpty { print("") }
+      print("RECENT")
+      for path in book.recent { print("  \(path)") }
+    }
+  }
+}
+
+struct PathsAdd: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "add", abstract: "Save a path to a built .app bundle under a name.")
+
+  @Argument(help: "Short name to remember the build by.")
+  var name: String
+
+  @Argument(help: "Path to a .app bundle.", completion: .file(extensions: ["app"]))
+  var path: String
+
+  @Flag(help: "Replace an existing saved path with the same name.")
+  var force = false
+
+  func run() throws {
+    try PathStore().add(name: name, path: path, force: force)
+    printSuccess("Saved path \(name) \u{2192} \(try PathStore.validate(path))")
+  }
+}
+
+struct PathsRemove: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "remove", abstract: "Remove a saved app path.")
+
+  @Argument(help: "Saved path name.")
+  var name: String
+
+  func run() throws {
+    try PathStore().remove(name: name)
+    printSuccess("Removed saved path \(name)")
+  }
+}
+
+struct PathsForget: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "forget-recent", abstract: "Clear the recently installed list.")
+
+  func run() throws {
+    try PathStore().clearRecents()
+    printSuccess("Cleared recently installed paths")
   }
 }
 
@@ -270,12 +666,10 @@ struct Launch: ParsableCommand {
   var arguments: [String] = []
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    if restart {
-      _ = try? client.simctl(["terminate", device.udid, bundleIdentifier])
-    }
-    let output = try client.simctl(["launch", device.udid, bundleIdentifier] + arguments)
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    let output = try service.launch(
+      bundleIdentifier, device: device, arguments: arguments, restart: restart)
     printSuccess(
       "Launched \(bundleIdentifier) on \(device.name)\(output.isEmpty ? "" : " (\(output))")")
   }
@@ -290,22 +684,62 @@ struct Terminate: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["terminate", device.udid, bundleIdentifier])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.terminate(bundleIdentifier, device: device)
     printSuccess("Terminated \(bundleIdentifier) on \(device.name)")
   }
 }
 
 struct Apps: ParsableCommand {
-  static let configuration = CommandConfiguration(abstract: "List installed apps as JSON.")
+  static let configuration = CommandConfiguration(
+    abstract: "Inspect the apps on a simulator.",
+    subcommands: [AppsList.self, AppsRunning.self],
+    defaultSubcommand: AppsList.self
+  )
+}
+
+struct AppsList: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "list", abstract: "List installed apps as JSON.")
+
+  @OptionGroup var target: DeviceOption
+
+  @Flag(help: "Print only bundle identifiers, one per line.")
+  var identifiers = false
+
+  func run() throws {
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    // simctl's raw plist dump has no devicectl equivalent, so a physical device
+    // gets the identifier list either way.
+    if identifiers || device.kind == .physical {
+      for identifier in try service.installedBundleIdentifiers(device: device) {
+        print(identifier)
+      }
+      return
+    }
+    print(try service.simctl.simctl(["listapps", device.udid]))
+  }
+}
+
+struct AppsRunning: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "running",
+    abstract: "List the bundle identifiers of apps running right now."
+  )
 
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    print(try client.simctl(["listapps", device.udid]))
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    let running = try service.runningBundleIdentifiers(device: device)
+    guard !running.isEmpty else {
+      print("No apps are running on \(device.name).")
+      return
+    }
+    for identifier in running { print(identifier) }
   }
 }
 
@@ -328,9 +762,13 @@ struct BundlesList: ParsableCommand {
       return
     }
     let width = apps.map(\.name.count).max() ?? 0
+    let identifierWidth = apps.map(\.bundleIdentifier.count).max() ?? 0
     for app in apps {
       let name = app.name.padding(toLength: width, withPad: " ", startingAt: 0)
-      print("\(name)  \(app.bundleIdentifier)")
+      let identifier = app.bundleIdentifier
+        .padding(toLength: identifierWidth, withPad: " ", startingAt: 0)
+      let scheme = app.scheme.map { "  \($0)://" } ?? ""
+      print("\(name)  \(identifier)\(scheme)")
     }
   }
 }
@@ -343,12 +781,16 @@ struct BundlesAdd: ParsableCommand {
   var name: String
   @Argument(help: "App bundle identifier.")
   var bundleIdentifier: String
+  @Option(help: "The app's URL scheme, used to fill $scheme in deep links.")
+  var scheme: String?
   @Flag(help: "Replace an existing saved app with the same name.")
   var force = false
 
   func run() throws {
-    try AppStore().add(name: name, bundleIdentifier: bundleIdentifier, force: force)
-    printSuccess("Saved app \(name) → \(bundleIdentifier)")
+    try AppStore().add(
+      name: name, bundleIdentifier: bundleIdentifier, scheme: scheme, force: force)
+    let suffix = scheme.map { "  (\($0)://)" } ?? ""
+    printSuccess("Saved app \(name) → \(bundleIdentifier)\(suffix)")
   }
 }
 
@@ -365,28 +807,209 @@ struct BundlesRemove: ParsableCommand {
   }
 }
 
-struct Screenshot: ParsableCommand {
-  static let configuration = CommandConfiguration(abstract: "Capture a simulator screenshot.")
+/// Makes sure a capture has somewhere to land, in case a configured directory
+/// was moved or deleted since it was set.
+private func ensureParentDirectory(of path: String) throws {
+  let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+  try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+}
 
-  @Argument(help: "Output PNG path. Defaults to ./screenshot-<timestamp>.png.")
+struct Screenshot: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Capture a simulator screenshot.",
+    discussion: """
+      With no path, the file is named simbuddy-<timestamp>.png and written to the
+      directory from `simbuddy config set screenshot-directory`, or to the
+      working directory when that is not set.
+      """
+  )
+
+  @Argument(help: "Output PNG path.", completion: .file(extensions: ["png"]))
   var output: String?
+
+  @Option(help: "Directory to write into, overriding the configured one.", completion: .directory)
+  var directory: String?
 
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    let path = output ?? "screenshot-\(Self.timestamp()).png"
-    let absolute = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
-      .standardizedFileURL.path
-    _ = try client.simctl(["io", device.udid, "screenshot", absolute])
+    let settings = try SettingsStore().load()
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    let absolute = settings.destination(
+      explicit: output,
+      directory: directory ?? settings.screenshotDirectory,
+      fileName: CaptureName.screenshot()
+    )
+    try ensureParentDirectory(of: absolute)
+    try service.screenshot(to: absolute, device: device)
     printSuccess("Saved screenshot to \(absolute)")
   }
+}
 
-  private static func timestamp() -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "yyyyMMdd-HHmmss"
-    return formatter.string(from: Date())
+extension Recorder.Codec: ExpressibleByArgument {}
+
+struct Record: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Record the simulator screen to a movie.",
+    discussion: """
+      Recording runs until you press Ctrl+C, or until --duration elapses. With no
+      path, the file is named simbuddy-<timestamp>.mov and written to the
+      directory from `simbuddy config set recording-directory`, or to the working
+      directory when that is not set.
+      """
+  )
+
+  @Argument(help: "Output movie path.", completion: .file(extensions: ["mov", "mp4"]))
+  var output: String?
+
+  @Option(help: "Directory to write into, overriding the configured one.", completion: .directory)
+  var directory: String?
+
+  @Option(help: "Video codec: h264 or hevc.")
+  var codec: Recorder.Codec = .h264
+
+  @Option(help: "Stop automatically after this many seconds.")
+  var duration: Double?
+
+  @OptionGroup var target: DeviceOption
+
+  func validate() throws {
+    if let duration, duration <= 0 {
+      throw ValidationError("--duration must be greater than zero.")
+    }
+  }
+
+  func run() throws {
+    let settings = try SettingsStore().load()
+    let client = SimctlClient()
+    let device = try client.resolveDevice(target.device)
+    let absolute = settings.destination(
+      explicit: output,
+      directory: directory ?? settings.recordingDirectory,
+      fileName: CaptureName.recording()
+    )
+
+    let recorder = Recorder()
+    note("Starting the recorder…")
+    let session = try recorder.start(device: device, path: absolute, codec: codec)
+    printSuccess("Recording \(device.name) to \(session.path)")
+
+    if let duration {
+      print("Stopping after \(Self.format(duration)). Press Ctrl+C to stop sooner.")
+    } else {
+      print("Press Ctrl+C to stop.")
+    }
+
+    installInterruptHandler()
+    let deadline = duration.map { Date().addingTimeInterval($0) }
+    while !recordingShouldStop {
+      if let deadline, Date() >= deadline { break }
+      usleep(100_000)
+    }
+
+    // stdout is buffered when piped, so progress goes to stderr where it shows
+    // up immediately and stays out of a captured recording path.
+    note("Stopping and finalizing…")
+    let finished = try recorder.stop()
+    printSuccess(
+      "Saved \(Self.format(finished.duration())) to \(finished.path)")
+  }
+
+  private func installInterruptHandler() {
+    recordingShouldStop = false
+    // A default SIGINT would kill this process and leave simctl finalizing
+    // nothing, so take the signal and stop the recording properly.
+    signal(SIGINT) { _ in recordingShouldStop = true }
+    signal(SIGTERM) { _ in recordingShouldStop = true }
+  }
+
+  private static func format(_ seconds: TimeInterval) -> String {
+    let whole = Int(seconds.rounded())
+    guard whole >= 60 else { return "\(whole)s" }
+    return "\(whole / 60)m \(whole % 60)s"
+  }
+}
+
+/// Signal handlers cannot capture context, so the stop flag lives here.
+private nonisolated(unsafe) var recordingShouldStop = false
+
+struct Config: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Read and change stored preferences.",
+    subcommands: [ConfigList.self, ConfigGet.self, ConfigSet.self, ConfigUnset.self],
+    defaultSubcommand: ConfigList.self
+  )
+}
+
+extension SettingsKey: ExpressibleByArgument {}
+
+struct ConfigList: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "list", abstract: "Show every setting and its value.")
+
+  func run() throws {
+    let store = SettingsStore()
+    let settings = try store.load()
+    let width = SettingsKey.allCases.map(\.rawValue.count).max() ?? 0
+    for key in SettingsKey.allCases {
+      let name = key.rawValue.padding(toLength: width, withPad: " ", startingAt: 0)
+      let value: String
+      switch key {
+      case .screenshotDirectory:
+        value = settings.screenshotDirectory ?? "(working directory)"
+      case .recordingDirectory:
+        value = settings.recordingDirectory ?? "(working directory)"
+      }
+      print("\(name)  \(value)")
+    }
+    print("")
+    print("Stored in \(store.fileURL.path)")
+  }
+}
+
+struct ConfigGet: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "get", abstract: "Print one setting.")
+
+  @Argument(help: "Setting name, for example screenshot-directory.")
+  var key: SettingsKey
+
+  func run() throws {
+    guard let value = try SettingsStore().value(for: key) else { return }
+    print(value)
+  }
+}
+
+struct ConfigSet: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "set",
+    abstract: "Change one setting.",
+    discussion: "Directories are created if they do not exist yet."
+  )
+
+  @Argument(help: "Setting name, for example screenshot-directory.")
+  var key: SettingsKey
+
+  @Argument(help: "New value.", completion: .directory)
+  var value: String
+
+  func run() throws {
+    let resolved = try SettingsStore().set(key, to: value)
+    printSuccess("Set \(key.rawValue) to \(resolved)")
+  }
+}
+
+struct ConfigUnset: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "unset", abstract: "Return one setting to its default.")
+
+  @Argument(help: "Setting name.")
+  var key: SettingsKey
+
+  func run() throws {
+    try SettingsStore().clear(key)
+    printSuccess("Cleared \(key.rawValue)")
   }
 }
 
@@ -407,9 +1030,9 @@ struct ClipboardCopy: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["pbcopy", device.udid], standardInput: Data(text.utf8))
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.copyToClipboard(text, device: device)
     printSuccess("Copied text to \(device.name)")
   }
 }
@@ -421,9 +1044,9 @@ struct ClipboardPaste: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    print(try client.simctl(["pbpaste", device.udid]))
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    print(try service.readClipboard(device: device))
   }
 }
 
@@ -439,8 +1062,10 @@ struct Push: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.require(.push, on: device)
+    let client = service.simctl
     let path = URL(fileURLWithPath: NSString(string: payload).expandingTildeInPath)
       .standardizedFileURL.path
     guard FileManager.default.fileExists(atPath: path) else {
@@ -467,10 +1092,9 @@ struct LocationSet: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    try client.validateCoordinate(latitude: latitude, longitude: longitude)
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["location", device.udid, "set", "\(latitude),\(longitude)"])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.setLocation(latitude: latitude, longitude: longitude, device: device)
     printSuccess("Set \(device.name) location to \(latitude),\(longitude)")
   }
 }
@@ -482,9 +1106,9 @@ struct LocationClear: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["location", device.udid, "clear"])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.clearLocation(device: device)
     printSuccess("Cleared simulated location on \(device.name)")
   }
 }
@@ -501,9 +1125,9 @@ struct Appearance: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["ui", device.udid, "appearance", appearance.rawValue])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.setAppearance(appearance.rawValue, device: device)
     printSuccess("Set \(device.name) to \(appearance.rawValue) appearance")
   }
 }
@@ -555,8 +1179,12 @@ struct PrivacyReset: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
+    // `service` here is the privacy service being reset, so the device service
+    // needs its own name.
+    let devices = DeviceService()
+    let device = try target.resolve(devices)
+    try devices.require(.privacy, on: device)
+    let client = devices.simctl
     var arguments = ["privacy", device.udid, "reset"]
     if let service { arguments.append(service) }
     arguments.append(bundleIdentifier)
@@ -571,8 +1199,10 @@ private func changePrivacy(
   bundleIdentifier: String,
   target: DeviceOption
 ) throws {
-  let client = SimctlClient()
-  let device = try client.resolveDevice(target.device)
+  let deviceService = DeviceService()
+  let device = try target.resolve(deviceService)
+  try deviceService.require(.privacy, on: device)
+  let client = deviceService.simctl
   _ = try client.simctl(["privacy", device.udid, action, service, bundleIdentifier])
   let verb = action == "grant" ? "Granted" : "Revoked"
   printSuccess("\(verb) \(service) for \(bundleIdentifier)")
@@ -593,16 +1223,9 @@ struct StatusBarClean: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl([
-      "status_bar", device.udid, "override",
-      "--time", "9:41",
-      "--batteryState", "charged",
-      "--batteryLevel", "100",
-      "--wifiBars", "3",
-      "--cellularBars", "4",
-    ])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.applyCleanStatusBar(device: device)
     printSuccess("Applied a clean status bar to \(device.name)")
   }
 }
@@ -614,9 +1237,9 @@ struct StatusBarClear: ParsableCommand {
   @OptionGroup var target: DeviceOption
 
   func run() throws {
-    let client = SimctlClient()
-    let device = try client.resolveDevice(target.device)
-    _ = try client.simctl(["status_bar", device.udid, "clear"])
+    let service = DeviceService()
+    let device = try target.resolve(service)
+    try service.clearStatusBar(device: device)
     printSuccess("Cleared status-bar overrides on \(device.name)")
   }
 }
@@ -626,7 +1249,7 @@ struct Doctor: ParsableCommand {
     abstract: "Check the local Xcode and Simulator setup.")
 
   func run() throws {
-    for line in try SimctlClient().diagnostics() {
+    for line in try DeviceService().diagnostics() {
       printSuccess(line)
     }
   }

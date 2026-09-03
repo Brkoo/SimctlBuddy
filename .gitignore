@@ -5,3 +5,7 @@
 DerivedData/
 screenshots/
 recordings/
+
+# Captures the tool writes into the working directory by default
+simbuddy-*.png
+simbuddy-*.mov

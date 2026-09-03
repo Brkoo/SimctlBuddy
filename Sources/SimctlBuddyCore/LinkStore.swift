@@ -3,10 +3,27 @@ import Foundation
 public struct SavedLink: Codable, Equatable, Sendable {
   public let name: String
   public let url: String
+  /// Bundle identifiers this link belongs to. Empty or absent means any app.
+  public let apps: [String]?
 
-  public init(name: String, url: String) {
+  public init(name: String, url: String, apps: [String]? = nil) {
     self.name = name
     self.url = url
+    self.apps = (apps?.isEmpty ?? true) ? nil : apps
+  }
+
+  public var template: LinkTemplate {
+    LinkTemplate.parse(url)
+  }
+
+  /// True when this link is offered for the given app.
+  public func appliesTo(bundleIdentifier: String) -> Bool {
+    guard let apps, !apps.isEmpty else { return true }
+    return apps.contains { $0.caseInsensitiveCompare(bundleIdentifier) == .orderedSame }
+  }
+
+  public var isRestricted: Bool {
+    !(apps?.isEmpty ?? true)
   }
 }
 
@@ -17,10 +34,7 @@ public struct LinkStore: Sendable {
     if let fileURL {
       self.fileURL = fileURL
     } else {
-      let base = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config", isDirectory: true)
-        .appendingPathComponent("simbuddy", isDirectory: true)
-      self.fileURL = base.appendingPathComponent("links.json")
+      self.fileURL = ConfigDirectory.file("links.json")
     }
   }
 
@@ -31,15 +45,23 @@ public struct LinkStore: Sendable {
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
   }
 
-  public func add(name: String, url: String, force: Bool) throws {
-    guard SimctlClient.isValidDeepLink(url) else { throw SimctlBuddyError.invalidURL(url) }
+  public func add(
+    name: String,
+    url: String,
+    apps: [String]? = nil,
+    force: Bool
+  ) throws {
+    // A template is checked by rendering it with stand-in values, so
+    // "$scheme://x" is accepted while a genuine typo still is not.
+    try LinkTemplate.parse(url).validate()
     var links = try load()
+    let entry = SavedLink(name: name, url: url, apps: apps)
     if let index = links.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })
     {
       guard force else { throw SimctlBuddyError.duplicateLink(name) }
-      links[index] = SavedLink(name: name, url: url)
+      links[index] = entry
     } else {
-      links.append(SavedLink(name: name, url: url))
+      links.append(entry)
     }
     try save(links)
   }
@@ -64,7 +86,8 @@ public struct LinkStore: Sendable {
     return link
   }
 
-  private func save(_ links: [SavedLink]) throws {
+  /// Internal rather than private so import can write a merged set.
+  func save(_ links: [SavedLink]) throws {
     try FileManager.default.createDirectory(
       at: fileURL.deletingLastPathComponent(),
       withIntermediateDirectories: true

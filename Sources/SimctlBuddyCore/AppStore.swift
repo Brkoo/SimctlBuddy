@@ -3,10 +3,14 @@ import Foundation
 public struct SavedApp: Codable, Equatable, Sendable {
   public let name: String
   public let bundleIdentifier: String
+  /// The app's URL scheme, when it has one. Deep links written with `$scheme`
+  /// resolve it from here, so one link definition covers every market's app.
+  public let scheme: String?
 
-  public init(name: String, bundleIdentifier: String) {
+  public init(name: String, bundleIdentifier: String, scheme: String? = nil) {
     self.name = name
     self.bundleIdentifier = bundleIdentifier
+    self.scheme = scheme
   }
 }
 
@@ -19,10 +23,7 @@ public struct AppStore: Sendable {
     if let fileURL {
       self.fileURL = fileURL
     } else {
-      let base = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config", isDirectory: true)
-        .appendingPathComponent("simbuddy", isDirectory: true)
-      self.fileURL = base.appendingPathComponent("apps.json")
+      self.fileURL = ConfigDirectory.file("apps.json")
     }
   }
 
@@ -33,19 +34,36 @@ public struct AppStore: Sendable {
       .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
   }
 
-  public func add(name: String, bundleIdentifier: String, force: Bool) throws {
+  public func add(
+    name: String,
+    bundleIdentifier: String,
+    scheme: String? = nil,
+    force: Bool
+  ) throws {
     let identifier = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
     guard Self.isValidBundleIdentifier(identifier) else {
       throw SimctlBuddyError.invalidBundleIdentifier(bundleIdentifier)
     }
+    let trimmedScheme = scheme?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedScheme = (trimmedScheme?.isEmpty ?? true) ? nil : trimmedScheme
+    if let resolvedScheme, !LinkTemplate.isValidScheme(resolvedScheme) {
+      throw SimctlBuddyError.invalidScheme(resolvedScheme)
+    }
+
     var apps = try load()
+    let entry = SavedApp(name: name, bundleIdentifier: identifier, scheme: resolvedScheme)
     if let index = apps.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
       guard force else { throw SimctlBuddyError.duplicateApp(name) }
-      apps[index] = SavedApp(name: name, bundleIdentifier: identifier)
+      apps[index] = entry
     } else {
-      apps.append(SavedApp(name: name, bundleIdentifier: identifier))
+      apps.append(entry)
     }
     try save(apps)
+  }
+
+  /// Apps that can supply a `$scheme`, in display order.
+  public func appsWithSchemes() throws -> [SavedApp] {
+    try load().filter { $0.scheme != nil }
   }
 
   public func remove(name: String) throws {

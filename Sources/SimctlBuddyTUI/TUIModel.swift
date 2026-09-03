@@ -26,6 +26,11 @@ public enum TUIPickerPurpose: Equatable, Sendable {
   case privacyBundle(action: TUIPrivacyAction, service: String)
   case privacyResetBundle
   case saveApp
+  /// The chosen value is a path to a .app bundle, not a bundle identifier.
+  case installPath
+  case savePath
+  /// Which app a `$scheme` link should be opened on.
+  case linkApp
 }
 
 public struct TUIPickerOption: Equatable, Sendable {
@@ -45,6 +50,9 @@ public struct TUIPickerOption: Equatable, Sendable {
 public struct TUIPicker: Equatable, Sendable {
   public let purpose: TUIPickerPurpose
   public let title: String
+  /// What Tab does here, and what the list is ordered by.
+  public let footnote: String
+  public let loadingMessage: String
   public var options: [TUIPickerOption]
   public var query = ""
   public var selectedIndex = 0
@@ -53,11 +61,15 @@ public struct TUIPicker: Equatable, Sendable {
   public init(
     purpose: TUIPickerPurpose,
     title: String,
+    footnote: String = "Saved apps are listed first",
+    loadingMessage: String = "Reading installed apps",
     options: [TUIPickerOption] = [],
     isLoading: Bool = true
   ) {
     self.purpose = purpose
     self.title = title
+    self.footnote = footnote
+    self.loadingMessage = loadingMessage
     self.options = options
     self.isLoading = isLoading
   }
@@ -86,14 +98,22 @@ public enum TUIActionID: Equatable, Sendable {
   case openDeepLink
   case addSavedLink
   case savedLink(SavedLink)
+  case exportLinks
+  case importLinks
   case savedApp(SavedApp)
   case saveApp
+  case savedPath(SavedPath)
+  case savePath
   case boot
   case shutdown
   case installApp
   case launchApp
   case terminateApp
   case screenshot
+  case startRecording
+  case stopRecording
+  case screenshotDirectory
+  case recordingDirectory
   case clipboard
   case location
   case appearanceDark
@@ -101,6 +121,7 @@ public enum TUIActionID: Equatable, Sendable {
   case cleanStatusBar
   case clearStatusBar
   case listApps
+  case listRunningApps
   case push
   case privacy(TUIPrivacyAction)
   case privacyReset
@@ -108,6 +129,35 @@ public enum TUIActionID: Equatable, Sendable {
   case locationClear
   case doctor
   case refresh
+}
+
+extension TUIActionID {
+  /// The capability this action needs, or nil when it is not device work.
+  public var capability: DeviceCapability? {
+    switch self {
+    case .openDeepLink, .addSavedLink, .savedLink: return .openURL
+    case .exportLinks, .importLinks: return nil
+    case .savedApp: return .launch
+    case .saveApp: return .listApps
+    case .savedPath, .savePath, .installApp: return .install
+    case .boot: return .boot
+    case .shutdown: return .shutdown
+    case .launchApp: return .launch
+    case .terminateApp: return .terminate
+    case .listApps: return .listApps
+    case .listRunningApps: return .runningApps
+    case .push: return .push
+    case .privacy, .privacyReset: return .privacy
+    case .screenshot: return .screenshot
+    case .startRecording, .stopRecording: return .record
+    case .screenshotDirectory, .recordingDirectory: return nil
+    case .clipboard, .clipboardPaste: return .clipboard
+    case .location, .locationClear: return .location
+    case .appearanceDark, .appearanceLight: return .appearance
+    case .cleanStatusBar, .clearStatusBar: return .statusBar
+    case .doctor, .refresh: return nil
+    }
+  }
 }
 
 public struct TUIActionItem: Equatable, Sendable {
@@ -141,12 +191,39 @@ public enum TUIPromptKind: Equatable, Sendable {
   case savedAppName(bundleIdentifier: String)
   case editSavedAppBundle(name: String)
   case confirmRemoveSavedApp(name: String)
+  case savedPathValue(name: String)
+  case savedPathName(path: String)
+  case editSavedPath(name: String)
+  case confirmRemoveSavedPath(name: String)
+  case screenshotDirectory
+  case recordingDirectory
+  case exportLinks
+  case importLinks
+  case savedAppScheme(name: String, bundleIdentifier: String)
+  case linkParameter(link: String, parameter: String)
 
   /// Confirmations show a question instead of a text field.
   public var isConfirmation: Bool {
     switch self {
-    case .confirmRemoveSavedLink, .confirmRemoveSavedApp: return true
+    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath: return true
     default: return false
+    }
+  }
+
+  /// Non-nil for fields that hold a path, which is what enables Tab completion
+  /// and decides which entries it offers.
+  public var pathFilter: PathFilter? {
+    switch self {
+    case .installApp, .savedPathValue, .editSavedPath:
+      return .appBundles
+    case .pushPayload:
+      return .files(extensions: ["apns", "json"])
+    case .exportLinks, .importLinks:
+      return .files(extensions: ["json"])
+    case .screenshotDirectory, .recordingDirectory:
+      return .directories
+    default:
+      return nil
     }
   }
 }
@@ -155,11 +232,80 @@ public struct TUIPrompt: Equatable, Sendable {
   public let kind: TUIPromptKind
   public let label: String
   public var value: String
+  /// What the last Tab press found, shown under the field. Cleared as soon as
+  /// typing resumes, so it never describes stale text.
+  public var candidates: [String] = []
+  public var note: String?
 
   public init(kind: TUIPromptKind, label: String, value: String = "") {
     self.kind = kind
     self.label = label
     self.value = value
+  }
+
+  public var supportsCompletion: Bool { kind.pathFilter != nil }
+
+  public mutating func clearCompletion() {
+    candidates = []
+    note = nil
+  }
+
+  /// Applies one Tab press. Returns false when nothing matched, so the caller
+  /// can say so instead of leaving the field looking unresponsive.
+  @discardableResult
+  public mutating func complete(using completer: PathCompleter) -> Bool {
+    guard let filter = kind.pathFilter else { return false }
+    let result = completer.complete(value, filter: filter)
+    value = result.value
+    if result.isUnique {
+      candidates = []
+      note = nil
+      return true
+    }
+    guard !result.candidates.isEmpty else {
+      candidates = []
+      note = "No match"
+      return false
+    }
+    candidates = result.candidates
+    note = "\(result.candidates.count) matches"
+    return true
+  }
+}
+
+/// A deep link being opened, part-way through collecting what it needs.
+///
+/// A template link asks for its app first, then for each parameter, so the run
+/// has to survive several prompts.
+public struct PendingLink: Equatable, Sendable {
+  /// The saved link's name, or empty for one typed in by hand.
+  public let linkName: String
+  public let template: LinkTemplate
+  public var app: SavedApp?
+  public var values: [String: String]
+  public var remaining: [LinkParameter]
+
+  public init(
+    linkName: String,
+    template: LinkTemplate,
+    app: SavedApp? = nil,
+    values: [String: String] = [:],
+    remaining: [LinkParameter] = []
+  ) {
+    self.linkName = linkName
+    self.template = template
+    self.app = app
+    self.values = values
+    self.remaining = remaining
+  }
+
+  /// The key remembered values are filed under.
+  public var memoryKey: String {
+    linkName.isEmpty ? LinkValueStore.adHocKey : linkName
+  }
+
+  public var title: String {
+    linkName.isEmpty ? "Open deep link" : linkName
   }
 }
 
@@ -167,6 +313,11 @@ public struct TUIState: Sendable {
   public var devices: [SimulatorDevice]
   public var links: [SavedLink]
   public var apps: [SavedApp] = []
+  public var paths: [SavedPath] = []
+  public var recentPaths: [String] = []
+  public var settings = Settings.empty
+  public var recording: Recorder.Session?
+  public var pendingLink: PendingLink?
   public var installedApps: [String] = []
   public var picker: TUIPicker?
   public var selectedDeviceIndex = 0
@@ -218,6 +369,9 @@ public struct TUIState: Sendable {
       if case .savedApp(let app) = item.id {
         return app.bundleIdentifier.lowercased().contains(needle)
       }
+      if case .savedPath(let saved) = item.id {
+        return saved.path.lowercased().contains(needle)
+      }
       return false
     }
   }
@@ -233,7 +387,23 @@ public struct TUIState: Sendable {
     }
   }
 
+  public var isRecording: Bool { recording != nil }
+
+  /// What the highlighted device can do. Actions it cannot are left out rather
+  /// than offered and refused.
+  public var availableCapabilities: Set<DeviceCapability> {
+    selectedDevice?.capabilities ?? DeviceKind.simulator.capabilities
+  }
+
   public var actions: [TUIActionItem] {
+    let allowed = availableCapabilities
+    return allActions.filter { item in
+      guard let capability = item.id.capability else { return true }
+      return allowed.contains(capability)
+    }
+  }
+
+  private var allActions: [TUIActionItem] {
     var result = [
       TUIActionItem(id: .openDeepLink, title: "Open deep link", hint: "o"),
       TUIActionItem(id: .addSavedLink, title: "Add saved deep link", hint: "a"),
@@ -241,10 +411,18 @@ public struct TUIState: Sendable {
     result += links.map {
       TUIActionItem(id: .savedLink($0), title: "↗ \($0.name)", hint: "↵/e/d")
     }
+    result += [
+      TUIActionItem(id: .exportLinks, title: "Export deep links", hint: ""),
+      TUIActionItem(id: .importLinks, title: "Import deep links", hint: ""),
+    ]
     result += apps.map {
       TUIActionItem(id: .savedApp($0), title: "▶ \($0.name)", hint: "↵/e/d")
     }
     result.append(TUIActionItem(id: .saveApp, title: "Save app bundle ID", hint: ""))
+    result += paths.map {
+      TUIActionItem(id: .savedPath($0), title: "⤓ \($0.name)", hint: "↵/e/d")
+    }
+    result.append(TUIActionItem(id: .savePath, title: "Save .app path", hint: ""))
     result += [
       TUIActionItem(id: .boot, title: "Boot / show simulator", hint: "b"),
       TUIActionItem(id: .shutdown, title: "Shut down simulator", hint: "x"),
@@ -252,13 +430,24 @@ public struct TUIState: Sendable {
       TUIActionItem(id: .launchApp, title: "Launch app", hint: "L"),
       TUIActionItem(id: .terminateApp, title: "Terminate app", hint: "t"),
       TUIActionItem(id: .listApps, title: "List installed apps", hint: ""),
+      TUIActionItem(id: .listRunningApps, title: "List running apps", hint: ""),
       TUIActionItem(id: .push, title: "Send push notification", hint: "p"),
       TUIActionItem(id: .privacy(.grant), title: "Grant privacy permission", hint: ""),
       TUIActionItem(id: .privacy(.revoke), title: "Revoke privacy permission", hint: ""),
       TUIActionItem(id: .privacyReset, title: "Reset privacy permissions", hint: ""),
       TUIActionItem(id: .screenshot, title: "Take screenshot", hint: "s"),
-      TUIActionItem(id: .clipboard, title: "Copy text to simulator", hint: "c"),
-      TUIActionItem(id: .clipboardPaste, title: "Read simulator clipboard", hint: "v"),
+    ]
+    // One row that flips, so the recording state is impossible to misread.
+    if isRecording {
+      result.append(TUIActionItem(id: .stopRecording, title: "Stop recording", hint: "R"))
+    } else {
+      result.append(TUIActionItem(id: .startRecording, title: "Start recording", hint: "R"))
+    }
+    result += [
+      TUIActionItem(id: .screenshotDirectory, title: "Set screenshot folder", hint: ""),
+      TUIActionItem(id: .recordingDirectory, title: "Set recording folder", hint: ""),
+      TUIActionItem(id: .clipboard, title: "Copy text to clipboard", hint: "c"),
+      TUIActionItem(id: .clipboardPaste, title: "Read the clipboard", hint: "v"),
       TUIActionItem(id: .location, title: "Set location", hint: "g"),
       TUIActionItem(id: .locationClear, title: "Clear location override", hint: ""),
       TUIActionItem(id: .appearanceDark, title: "Dark appearance", hint: ""),

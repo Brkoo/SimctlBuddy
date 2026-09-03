@@ -114,16 +114,17 @@ final class TUIStateTests: XCTestCase {
   }
 
   func testRendererGroupsActionsIntoSections() {
-    let state = TUIState(devices: devices)
+    var state = TUIState(devices: devices)
+    state.paths = [SavedPath(name: "Staging", path: "/builds/Staging.app")]
 
-    let screen = TUIRenderer().render(state: state, columns: 132, rows: 40)
+    // Tall enough for every section: the menu no longer fits in 40 rows.
+    let screen = TUIRenderer().render(state: state, columns: 132, rows: 60)
 
-    XCTAssertTrue(screen.contains("LINKS"))
-    XCTAssertTrue(screen.contains("DEVICE"))
-    XCTAssertTrue(screen.contains("APPS"))
-    XCTAssertTrue(screen.contains("CAPTURE"))
-    XCTAssertTrue(screen.contains("APPEARANCE"))
-    XCTAssertTrue(screen.contains("SYSTEM"))
+    for section in [
+      "LINKS", "SAVED BUILDS", "DEVICE", "APPS", "PRIVACY", "CAPTURE", "APPEARANCE", "SYSTEM",
+    ] {
+      XCTAssertTrue(screen.contains(section), "missing section \(section)")
+    }
   }
 
   func testRendererFillsTheAvailableHeight() {
@@ -152,8 +153,8 @@ final class TUIStateTests: XCTestCase {
   func testRendererShowsEmptyStateHints() {
     let screen = TUIRenderer().render(state: TUIState(), columns: 100, rows: 30)
 
-    XCTAssertTrue(screen.contains("No simulators found"))
-    XCTAssertTrue(screen.contains("No simulator selected"))
+    XCTAssertTrue(screen.contains("No devices found"))
+    XCTAssertTrue(screen.contains("No device selected"))
   }
 
   func testScreenModeGrowsAndShrinksWithinBounds() {
@@ -294,7 +295,8 @@ final class TUIStateTests: XCTestCase {
     XCTAssertEqual(state.selectedAction?.title, "↗ Bills")
 
     state.actionFilter = "screenshot"
-    XCTAssertEqual(state.visibleActions.map(\.title), ["Take screenshot"])
+    XCTAssertEqual(
+      state.visibleActions.map(\.title), ["Take screenshot", "Set screenshot folder"])
   }
 
   func testClearingTheActiveFilterRestoresTheFullList() {
@@ -543,5 +545,69 @@ final class TUIPickerTests: XCTestCase {
   func testRemovalConfirmationCoversSavedApps() {
     XCTAssertTrue(TUIPromptKind.confirmRemoveSavedApp(name: "Checkout").isConfirmation)
     XCTAssertFalse(TUIPromptKind.savedAppName(bundleIdentifier: "com.example.App").isConfirmation)
+  }
+
+  func testSavedBuildsBecomeActionsAndMatchTheirPath() {
+    var state = TUIState(devices: [])
+    state.paths = [SavedPath(name: "Staging", path: "/builds/Staging.app")]
+    state.focus = .actions
+
+    XCTAssertTrue(state.actions.contains { $0.title == "⤓ Staging" })
+
+    state.actionFilter = "/builds"
+    XCTAssertEqual(state.visibleActions.map(\.title), ["⤓ Staging"])
+  }
+
+  func testRecordingActionFlipsBetweenStartAndStop() {
+    var state = TUIState(devices: [])
+    XCTAssertFalse(state.isRecording)
+    XCTAssertTrue(state.actions.contains { $0.id == .startRecording })
+    XCTAssertFalse(state.actions.contains { $0.id == .stopRecording })
+
+    state.recording = Recorder.Session(
+      deviceUDID: "AAAA-BBBB",
+      deviceName: "iPhone 17 Pro",
+      path: "/movies/clip.mov",
+      startedAt: Date()
+    )
+
+    XCTAssertTrue(state.isRecording)
+    XCTAssertTrue(state.actions.contains { $0.id == .stopRecording })
+    XCTAssertFalse(state.actions.contains { $0.id == .startRecording })
+  }
+
+  func testHeaderShowsThatARecordingIsRunning() {
+    var state = TUIState(devices: [])
+    state.recording = Recorder.Session(
+      deviceUDID: "AAAA-BBBB",
+      deviceName: "iPhone 17 Pro",
+      path: "/movies/clip.mov",
+      startedAt: Date(timeIntervalSinceNow: -75)
+    )
+
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 32)
+
+    XCTAssertTrue(screen.contains("REC"))
+    XCTAssertTrue(screen.contains("1:15"))
+  }
+
+  func testRemovalConfirmationCoversSavedBuilds() {
+    XCTAssertTrue(TUIPromptKind.confirmRemoveSavedPath(name: "Staging").isConfirmation)
+    XCTAssertFalse(TUIPromptKind.savedPathName(path: "/builds/A.app").isConfirmation)
+  }
+
+  func testPickerDescribesWhatItIsLoading() {
+    var state = TUIState(devices: [])
+    state.picker = TUIPicker(
+      purpose: .terminateApp,
+      title: "Terminate app",
+      footnote: "Running apps first, then everything installed",
+      loadingMessage: "Reading running apps"
+    )
+
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 32)
+
+    XCTAssertTrue(screen.contains("Reading running apps…"))
+    XCTAssertTrue(screen.contains("Running apps first"))
   }
 }

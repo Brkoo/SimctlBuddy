@@ -171,6 +171,32 @@ public struct SimctlClient: Sendable {
     return identifiers.sorted()
   }
 
+  /// Bundle identifiers of the apps running on a device right now.
+  ///
+  /// simctl has no "list running apps", so this reads the simulator's own
+  /// launchd: every foreground app is registered as a `UIKitApplication:` job.
+  public func runningBundleIdentifiers(device: SimulatorDevice) throws -> [String] {
+    let output = try simctl(["spawn", device.udid, "launchctl", "list"])
+    return Self.parseRunningBundleIdentifiers(output)
+  }
+
+  /// Rows look like `88213  0  UIKitApplication:com.example.App[0x4f7c][rb-legacy]`.
+  /// A dash in the PID column means the job is registered but not running.
+  static func parseRunningBundleIdentifiers(_ output: String) -> [String] {
+    let marker = "UIKitApplication:"
+    var identifiers = Set<String>()
+    for line in output.split(separator: "\n") {
+      let columns = line.split(whereSeparator: \.isWhitespace)
+      guard columns.count >= 3, Int(columns[0]) != nil else { continue }
+      let label = columns[2 ..< columns.count].joined(separator: " ")
+      guard let start = label.range(of: marker) else { continue }
+      let rest = label[start.upperBound...]
+      let identifier = String(rest.prefix(while: { $0 != "[" }))
+      if AppStore.isValidBundleIdentifier(identifier) { identifiers.insert(identifier) }
+    }
+    return identifiers.sorted()
+  }
+
   public func validateFile(at path: String) throws -> String {
     let expanded = NSString(string: path).expandingTildeInPath
     let absolute = URL(fileURLWithPath: expanded).standardizedFileURL.path

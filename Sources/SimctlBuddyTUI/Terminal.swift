@@ -42,7 +42,8 @@ enum TerminalError: LocalizedError {
 private nonisolated(unsafe) var terminalRestoreSettings = termios()
 private nonisolated(unsafe) var terminalRestoreArmed = false
 
-private let terminalResetSequence = "\u{001B}[?25h\u{001B}[?1049l"
+/// Show the cursor, re-enable auto-wrap, leave the alternate screen.
+private let terminalResetSequence = "\u{001B}[?25h\u{001B}[?7h\u{001B}[?1049l"
 
 private func restoreTerminalState() {
   guard terminalRestoreArmed else { return }
@@ -93,7 +94,12 @@ final class TerminalSession {
     for number in [SIGTERM, SIGHUP, SIGQUIT, SIGINT] {
       signal(number, handleFatalSignal)
     }
-    write("\u{001B}[?1049h\u{001B}[?25l\u{001B}[2J\u{001B}[H")
+    // Auto-wrap off is what keeps a frame from destroying itself. Any row that
+    // ends up wider than the window — a glyph the terminal draws two columns
+    // wide where we counted one — would otherwise wrap, push every later row
+    // down, and scroll the screen, leaving pieces of earlier frames behind.
+    // Clipped at the right edge is a cosmetic problem; scrolling is not.
+    write("\u{001B}[?1049h\u{001B}[?25l\u{001B}[?7l\u{001B}[2J\u{001B}[H")
   }
 
   func stop() {
@@ -114,6 +120,13 @@ final class TerminalSession {
 
   func write(_ value: String) {
     FileHandle.standardOutput.write(Data(value.utf8))
+  }
+
+  /// Wipes the whole screen. Shrinking a window leaves the emulator holding
+  /// cells the new, smaller frame never writes over, so a resize repaints from
+  /// a clean slate rather than on top of the old layout.
+  func clear() {
+    write("\u{001B}[2J\u{001B}[H")
   }
 
   /// Reads one key per call, buffering whatever else arrived in the same chunk.
@@ -176,6 +189,60 @@ final class TerminalSession {
     case 0xF0...: return 3
     default: return 0
     }
+  }
+
+  /// Asks the terminal how wide it actually draws an ambiguous-width glyph.
+  ///
+  /// Prints one at a known column, then reads back where the cursor ended up.
+  /// A terminal that does not answer leaves the interface assuming one column,
+  /// which is the common case.
+  /// Set `SIMBUDDY_AMBIGUOUS_WIDTH=1` or `2` to skip the probe, for a terminal
+  /// that does not answer it or answers wrongly.
+  static let widthOverrideKey = "SIMBUDDY_AMBIGUOUS_WIDTH"
+
+  func measureAmbiguousWidth() -> Int {
+    if let override = ProcessInfo.processInfo.environment[Self.widthOverrideKey],
+      let value = Int(override.trimmingCharacters(in: .whitespaces)),
+      (1...2).contains(value)
+    {
+      return value
+    }
+    guard isActive else { return 1 }
+    // Bottom-left, which the following clear wipes anyway.
+    write("\u{001B}[999;1H●\u{001B}[6n")
+    let measured = readCursorColumn()
+    write("\u{001B}[2J\u{001B}[H")
+    guard let measured else { return 1 }
+    // The glyph started at column 1, so the cursor sits one past its width.
+    return measured >= 3 ? 2 : 1
+  }
+
+  /// Reads a `ESC[row;colR` cursor report, giving up quickly if none comes.
+  private func readCursorColumn() -> Int? {
+    var response = [UInt8]()
+    // Reads return after VTIME (0.1s), so this waits at most about half a second.
+    for _ in 0..<5 {
+      var bytes = [UInt8](repeating: 0, count: 64)
+      let count = bytes.withUnsafeMutableBytes { buffer in
+        Darwin.read(STDIN_FILENO, buffer.baseAddress, buffer.count)
+      }
+      if count > 0 { response += bytes.prefix(count) }
+      if response.contains(UInt8(ascii: "R")) { break }
+    }
+
+    guard
+      let terminator = response.firstIndex(of: UInt8(ascii: "R")),
+      let text = String(bytes: response[..<terminator], encoding: .utf8),
+      let semicolon = text.lastIndex(of: ";")
+    else {
+      // Anything that was not the report is a keypress; keep it for the loop.
+      pending += response
+      return nil
+    }
+
+    // Whatever arrived after the report is real input.
+    pending += response[(terminator + 1)...]
+    return Int(text[text.index(after: semicolon)...])
   }
 
   func size() -> TerminalSize {
