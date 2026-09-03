@@ -12,7 +12,7 @@ struct SimctlBuddy: ParsableCommand {
       Run without arguments for the interactive terminal UI. Scriptable commands
       and reusable deep-link aliases are also available.
       """,
-    version: "0.3.0",
+    version: "0.4.0",
     subcommands: [
       Interactive.self,
       Devices.self,
@@ -26,6 +26,7 @@ struct SimctlBuddy: ParsableCommand {
       Apps.self,
       Bundles.self,
       Paths.self,
+      Firebase.self,
       Screenshot.self,
       Record.self,
       Clipboard.self,
@@ -960,6 +961,8 @@ struct ConfigList: ParsableCommand {
         value = settings.screenshotDirectory ?? "(working directory)"
       case .recordingDirectory:
         value = settings.recordingDirectory ?? "(working directory)"
+      case .firebaseServiceAccount:
+        value = settings.firebaseServiceAccount ?? "(none)"
       }
       print("\(name)  \(value)")
     }
@@ -1252,5 +1255,363 @@ struct Doctor: ParsableCommand {
     for line in try DeviceService().diagnostics() {
       printSuccess(line)
     }
+  }
+}
+
+// MARK: - Firebase App Distribution
+
+struct Firebase: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    abstract: "Install builds from Firebase App Distribution.",
+    discussion: """
+      App Distribution serves signed iOS binaries, so these builds install on a
+      connected device rather than a simulator.
+
+      Save an app once with `simbuddy firebase save <name> <appId>`, then list
+      and install its builds by that name. A credential is found automatically
+      from a service account key, gcloud, or the Firebase CLI — run
+      `simbuddy firebase status` to see which.
+      """,
+    subcommands: [
+      FirebaseStatus.self,
+      FirebaseProjects.self,
+      FirebaseApps.self,
+      FirebaseSave.self,
+      FirebaseForget.self,
+      FirebaseReleases.self,
+      FirebaseInstall.self,
+      FirebaseClean.self,
+    ],
+    defaultSubcommand: FirebaseReleases.self
+  )
+}
+
+struct FirebaseStatus: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "status",
+    abstract: "Show which Google credential will be used."
+  )
+
+  func run() throws {
+    let credentials = FirebaseCredentials()
+    let sources = credentials.availableSources()
+    if sources.isEmpty {
+      print("No credential source found on this machine.")
+    } else {
+      print("Credential sources found:")
+      for source in sources { print("  • \(source)") }
+    }
+    print("")
+    do {
+      let token = try credentials.token()
+      printSuccess("Signed in through \(token.source.label)")
+      if token.needsQuotaProject {
+        print("  A user credential, so requests name the project for quota.")
+      }
+    } catch {
+      print("✗ \(error.localizedDescription)")
+      throw ExitCode.failure
+    }
+  }
+}
+
+struct FirebaseProjects: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "projects",
+    abstract: "List the Firebase projects you can see."
+  )
+
+  func run() throws {
+    let projects = try FirebaseDistribution().projects()
+    guard !projects.isEmpty else {
+      print("No Firebase projects visible to this credential.")
+      return
+    }
+    let width = projects.map(\.id.count).max() ?? 0
+    for project in projects {
+      print("\(project.id.padding(toLength: width, withPad: " ", startingAt: 0))  \(project.name)")
+    }
+  }
+}
+
+struct FirebaseApps: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "apps",
+    abstract: "List saved apps, or the iOS apps in your Firebase projects.",
+    discussion: """
+      With no options, lists the apps you have saved. Pass --all to walk every
+      project you can see, or --project to look at one.
+
+      An app ID looks like 1:1234567890:ios:abc123 and lives in the Firebase
+      console under Project settings › General › Your apps, as "App ID".
+      """
+  )
+
+  @Option(help: "List the iOS apps in this Firebase project.")
+  var project: String?
+
+  @Flag(help: "List the iOS apps in every project you can see.")
+  var all = false
+
+  func validate() throws {
+    if all && project != nil {
+      throw ValidationError("Pass either --all or --project, not both.")
+    }
+  }
+
+  func run() throws {
+    if all {
+      try listEverything()
+      return
+    }
+    if let project {
+      printApps(try FirebaseDistribution().apps(projectID: project), in: project)
+      return
+    }
+
+    let saved = try FirebaseStore().load()
+    guard !saved.isEmpty else {
+      print("No saved Firebase apps.")
+      print("")
+      print("Find an app ID with `simbuddy firebase apps --all`, then save it:")
+      print("  simbuddy firebase save <name> <appId>")
+      return
+    }
+    let width = saved.map(\.name.count).max() ?? 0
+    for app in saved {
+      print("\(app.name.padding(toLength: width, withPad: " ", startingAt: 0))  \(app.appID)")
+    }
+  }
+
+  private func printApps(_ apps: [FirebaseApp], in project: String) {
+    guard !apps.isEmpty else {
+      print("No iOS apps in \(project).")
+      return
+    }
+    let width = apps.map(\.displayName.count).max() ?? 0
+    for app in apps {
+      print("\(app.displayName.padding(toLength: width, withPad: " ", startingAt: 0))  \(app.appID)")
+    }
+  }
+
+  /// Access is granted per project, so some refusing is normal rather than a
+  /// failure. They are listed at the end instead of interrupting the walk.
+  private func listEverything() throws {
+    note("Reading every project\u{2026}")
+    let listings = try FirebaseDistribution().allApps()
+    let found = listings.filter { !$0.apps.isEmpty }
+    let width = found.flatMap(\.apps).map(\.displayName.count).max() ?? 0
+
+    for listing in found {
+      print("\(listing.projectID)")
+      for app in listing.apps {
+        let name = app.displayName.padding(toLength: width, withPad: " ", startingAt: 0)
+        print("    \(name)  \(app.appID)")
+      }
+    }
+
+    let empty = listings.filter { $0.apps.isEmpty && $0.isReadable }
+    if !empty.isEmpty {
+      print("")
+      print("No iOS apps: \(empty.map(\.projectID).joined(separator: ", "))")
+    }
+    let refused = listings.filter { !$0.isReadable }
+    if !refused.isEmpty {
+      print("")
+      print("Not readable with this credential: \(refused.map(\.projectID).joined(separator: ", "))")
+      print("Those need the Firebase App Distribution Viewer role on the project.")
+    }
+    if found.isEmpty && refused.count == listings.count {
+      throw ExitCode.failure
+    }
+  }
+}
+
+struct FirebaseSave: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "save",
+    abstract: "Remember a Firebase app ID under a name.",
+    discussion: """
+      The app ID looks like 1:1234567890:ios:abc123. Find it either with
+      `simbuddy firebase apps --all`, or in the Firebase console under
+      Project settings › General › Your apps, where it is labelled "App ID".
+      """
+  )
+
+  @Argument(help: "The name to use from now on.")
+  var name: String
+
+  @Argument(help: "The app ID, shaped 1:1234567890:ios:abc123.")
+  var appID: String
+
+  @Flag(help: "Replace a saved app with the same name.")
+  var force = false
+
+  func run() throws {
+    try FirebaseStore().add(name: name, appID: appID, force: force)
+    printSuccess("Saved Firebase app \(name) \u{2192} \(appID)")
+  }
+}
+
+struct FirebaseForget: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "forget",
+    abstract: "Remove a saved Firebase app."
+  )
+
+  @Argument(help: "The saved name to remove.")
+  var name: String
+
+  func run() throws {
+    try FirebaseStore().remove(name: name)
+    printSuccess("Removed \(name)")
+  }
+}
+
+struct FirebaseReleases: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "releases",
+    abstract: "List the builds available for an app."
+  )
+
+  @Argument(help: "A saved app name, or an app ID.")
+  var app: String
+
+  @Option(help: "How many builds to list.")
+  var limit = 25
+
+  @Option(help: "An App Distribution filter, for example 'displayVersion=\"1.2.0\"'.")
+  var filter: String?
+
+  @Flag(help: "Print the whole release notes instead of a one-line summary.")
+  var notes = false
+
+  func run() throws {
+    let releases = try FirebaseDistribution().releases(app: app, limit: limit, filter: filter)
+    guard !releases.isEmpty else {
+      print("No builds found for \(app).")
+      return
+    }
+    let width = releases.map(\.versionLabel.count).max() ?? 0
+    for release in releases {
+      let version = release.versionLabel.padding(toLength: width, withPad: " ", startingAt: 0)
+      var line = "\(version)  \(release.releaseID)"
+      if let created = release.createTime {
+        line += "  \(RelativeDate.string(from: created))"
+      }
+      print(line)
+      // CI often writes a whole commit log here, which buries the list.
+      if notes {
+        let full = release.releaseNotes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        for line in full.split(separator: "\n") { print("    \(line)") }
+      } else if let summary = release.summaryLine {
+        print("    \(summary)")
+      }
+    }
+  }
+}
+
+struct FirebaseInstall: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "install",
+    abstract: "Download a build and install it on a connected device.",
+    discussion: """
+      Installs the newest build unless a release ID is given. The build is
+      checked against the device's UDID before installing, because an ad hoc
+      build only runs on devices that were registered when it was built.
+      """
+  )
+
+  @Argument(help: "A saved app name, or an app ID.")
+  var app: String
+
+  @Argument(help: "A release ID from `firebase releases`. Defaults to the newest build.")
+  var release: String?
+
+  @Flag(help: "Install even when the build is not signed for this device.")
+  var force = false
+
+  @Flag(help: "Launch the app once it is installed.")
+  var launch = false
+
+  @OptionGroup var target: DeviceOption
+
+  func validate() throws {
+    if target.simulatorsOnly {
+      throw ValidationError(
+        SimctlBuddyError.firebaseNeedsPhysicalDevice.localizedDescription)
+    }
+  }
+
+  func run() throws {
+    let store = FirebaseStore()
+    let appID = try store.resolve(app)
+    let service = DeviceService()
+    let distribution = FirebaseDistribution(service: service, store: store)
+
+    // A device build needs a device, so physical devices are not opt-in here
+    // the way they are elsewhere.
+    let device: Device
+    do {
+      device = try service.resolveDevice(
+        target.device, requireBooted: true, kinds: [.physical])
+    } catch SimctlBuddyError.noBootedDevice, SimctlBuddyError.deviceNotFound {
+      // The generic message talks about booting a simulator, which is not the
+      // problem when the command only ever targets hardware.
+      throw SimctlBuddyError.setupProblem(
+        "No connected device. Plug one in, unlock it, and make sure Developer Mode is on — `simbuddy doctor` checks all three."
+      )
+    }
+
+    note("Reading builds…")
+    let releases = try distribution.releases(app: app, limit: 100)
+    guard !releases.isEmpty else {
+      throw SimctlBuddyError.releaseHasNoBinary(app)
+    }
+
+    let chosen: FirebaseRelease
+    if let release {
+      guard let match = releases.first(where: { $0.releaseID == release }) else {
+        throw ValidationError(
+          "No build with release ID \(release). Run `simbuddy firebase releases \(app)`.")
+      }
+      chosen = match
+    } else {
+      chosen = releases[0]
+    }
+
+    note("Fetching \(chosen.versionLabel)…")
+    let report = try distribution.install(
+      chosen, appID: appID, on: device, force: force)
+
+    printSuccess("Installed \(chosen.versionLabel) on \(device.name)")
+    for note in report.notes { print("  \(note)") }
+
+    if launch, let identifier = report.bundle.bundleIdentifier {
+      _ = try service.launch(identifier, device: device)
+      printSuccess("Launched \(identifier)")
+    }
+  }
+}
+
+struct FirebaseClean: ParsableCommand {
+  static let configuration = CommandConfiguration(
+    commandName: "clean",
+    abstract: "Delete downloaded builds."
+  )
+
+  func run() throws {
+    let freed = try AppArchive.clearCache()
+    let formatter = ByteCountFormatter()
+    printSuccess("Freed \(formatter.string(fromByteCount: Int64(freed)))")
+  }
+}
+
+/// Turns a timestamp into something readable in a list.
+enum RelativeDate {
+  static func string(from date: Date) -> String {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter.localizedString(for: date, relativeTo: Date())
   }
 }

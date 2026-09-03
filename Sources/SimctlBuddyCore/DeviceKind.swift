@@ -47,6 +47,7 @@ public enum DeviceCapability: String, Equatable, Sendable, CaseIterable {
   case statusBar
   case push
   case privacy
+  case firebaseInstall
 
   /// Why a device cannot do this, phrased for someone who just tried.
   public func unavailableReason(for kind: DeviceKind) -> String {
@@ -58,6 +59,9 @@ public enum DeviceCapability: String, Equatable, Sendable, CaseIterable {
         "Simulated push needs simctl. A real device has to receive a real notification through APNs."
     case (.privacy, .physical):
       return "devicectl cannot change privacy permissions. Reset them on the device in Settings."
+    case (.firebaseInstall, .simulator):
+      return
+        "App Distribution only serves signed device builds, which a simulator cannot run. Install a simulator build with `simbuddy install`."
     case (.reboot, .simulator):
       return "Use shutdown and boot for a simulator."
     default:
@@ -71,7 +75,7 @@ extension DeviceKind {
   public var capabilities: Set<DeviceCapability> {
     switch self {
     case .simulator:
-      return Set(DeviceCapability.allCases).subtracting([.reboot])
+      return Set(DeviceCapability.allCases).subtracting([.reboot, .firebaseInstall])
     case .physical:
       // devicectl has no boot/shutdown, no simulated push, and no privacy
       // control. Recording exists (`capture screen-record`) but is not wired up

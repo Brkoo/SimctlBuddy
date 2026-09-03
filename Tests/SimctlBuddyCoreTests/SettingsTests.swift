@@ -88,7 +88,7 @@ final class SettingsTests: XCTestCase {
   }
 
   func testEverySettingHasACommandLineName() {
-    XCTAssertEqual(SettingsKey.allCases.count, 2)
+    XCTAssertEqual(SettingsKey.allCases.count, 3)
     for key in SettingsKey.allCases {
       XCTAssertFalse(key.rawValue.contains(" "))
       XCTAssertFalse(key.summary.isEmpty)

@@ -9,3 +9,9 @@ recordings/
 # Captures the tool writes into the working directory by default
 simbuddy-*.png
 simbuddy-*.mov
+
+# Google service account keys. These are long-lived private credentials and
+# must never be committed, even accidentally.
+*service-account*.json
+*serviceaccount*.json
+*-key.json

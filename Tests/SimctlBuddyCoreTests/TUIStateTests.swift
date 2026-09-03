@@ -90,7 +90,10 @@ final class TUIStateTests: XCTestCase {
   func testRendererShowsSavedLinkURLInDetails() {
     let link = SavedLink(name: "Login", url: "myapp://login")
     var state = TUIState(devices: devices, links: [link])
-    state.selectedActionIndex = 2
+    // Found rather than hardcoded, so reordering the action list does not break
+    // a test about what the details pane says.
+    state.selectedActionIndex = try! XCTUnwrap(
+      state.actions.firstIndex { $0.id == .savedLink(link) })
 
     let screen = TUIRenderer().render(state: state, columns: 120, rows: 30)
 

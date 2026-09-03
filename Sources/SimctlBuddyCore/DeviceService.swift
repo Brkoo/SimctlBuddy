@@ -185,6 +185,16 @@ public struct DeviceService: Sendable {
     } else {
       lines.append("devicectl could not list devices")
     }
+
+    // Which Google credential App Distribution would use. Reported without
+    // fetching a token, so `doctor` never waits on the network.
+    let sources = FirebaseCredentials().availableSources()
+    if sources.isEmpty {
+      lines.append(
+        "No Google credential, so App Distribution is unavailable; run `simbuddy firebase status`")
+    } else {
+      lines.append("Firebase credential from \(sources.joined(separator: ", "))")
+    }
     return lines
   }
 

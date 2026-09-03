@@ -8,10 +8,16 @@ see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - [Delivered since this file was written](#delivered-since-this-file-was-written)
 - [Physical device support](#physical-device-support)
+- [Firebase App Distribution](#firebase-app-distribution)
 - [Smaller items](#smaller-items)
 - [Not planned](#not-planned)
 
 ## Delivered since this file was written
+
+**Firebase App Distribution is now built** — see
+[CHANGELOG.md](CHANGELOG.md) and the [App Distribution section of the
+README](README.md#firebase-app-distribution). What remains of the section below
+is the part still outstanding.
 
 **Physical device support is now built** — see [CHANGELOG.md](CHANGELOG.md) and
 the Physical devices section of the [README](README.md#physical-devices). What
@@ -103,6 +109,47 @@ plus the device-only additions. Losing push and privacy is the real cut.
   them, so `doctor` should report the `devicectl` version and the backend should
   gate on it.
 
+## Firebase App Distribution
+
+Fetching and installing builds from App Distribution is built. What follows is
+what was learned doing it, and what is left.
+
+### What is not possible, and will not become possible
+
+- **Simulators.** App Distribution serves `.ipa` files for iOS — signed device
+  binaries. It does not accept a zipped `.app`, and a simulator cannot run an
+  IPA. This is a limit of the product, not of SimctlBuddy.
+- **Installing an ad hoc build on an unregistered device.** The device UDID has
+  to be inside the provisioning profile at build time. Firebase does not
+  re-sign, so the only fix is a rebuild. SimctlBuddy detects this before
+  installing and says so; it cannot work around it.
+- **Zero configuration.** There is an account and an authorization boundary in
+  the middle, so this can never be as configuration-free as `simctl`. The most
+  that can be done — and is done — is to use a credential the machine already
+  has rather than asking for a new one.
+- **Being a tester is not enough.** Reading the API needs a project IAM role.
+  Only a project admin can grant it.
+
+### Still outstanding
+
+- **Uploading.** Only reading and installing are built. `appdistribution:distribute`
+  in the Firebase CLI already covers uploading well, and CI is the right place
+  for it, so this is low priority.
+- **Browsing projects in the interactive UI.** The command line can list a
+  project's apps with `firebase apps --project`, but the interactive UI only
+  offers saved apps. Browsing would mean two more API calls before anything
+  useful appears on screen.
+- **Tester and group management.** The API supports it. It is a different job
+  from getting a build onto the phone in front of you, and belongs to whoever
+  administers the project.
+- **Android builds.** The API returns them, and they are refused with an
+  explanation. Installing them would mean `adb`, which is
+  [out of scope](#not-planned).
+- **A device-aware release list.** Every build could be marked installable or
+  not against the selected device before it is picked, rather than at install
+  time. That means downloading each build to read its profile, so it needs the
+  cache to be warm to be worth doing.
+
 ## Smaller items
 
 - A `--json` flag on the remaining read-only subcommands, so everything can be
@@ -113,7 +160,7 @@ plus the device-only additions. Losing push and privacy is the real cut.
 - Shell completion for saved link, app, and path names, not only for
   subcommands. Path *fields* already complete on `Tab` inside the interactive
   UI; this is about the command line.
-- Import and export for saved apps and build paths, matching `links export` and
+- Import and export for saved apps, build paths, and Firebase app IDs, matching `links export` and
   `links import`. Build paths are machine-specific, so an export would have to
   say so rather than pretend to be portable.
 - A recording indicator that survives a crash. Quitting stops a recording, but a

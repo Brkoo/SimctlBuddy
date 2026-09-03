@@ -5,10 +5,18 @@ import Foundation
 public struct Settings: Codable, Equatable, Sendable {
   public var screenshotDirectory: String?
   public var recordingDirectory: String?
+  /// Path to a Google service account key, for reading App Distribution when
+  /// the machine has no gcloud or Firebase CLI signed in.
+  public var firebaseServiceAccount: String?
 
-  public init(screenshotDirectory: String? = nil, recordingDirectory: String? = nil) {
+  public init(
+    screenshotDirectory: String? = nil,
+    recordingDirectory: String? = nil,
+    firebaseServiceAccount: String? = nil
+  ) {
     self.screenshotDirectory = screenshotDirectory
     self.recordingDirectory = recordingDirectory
+    self.firebaseServiceAccount = firebaseServiceAccount
   }
 
   public static let empty = Settings()
@@ -18,11 +26,14 @@ public struct Settings: Codable, Equatable, Sendable {
 public enum SettingsKey: String, CaseIterable, Sendable {
   case screenshotDirectory = "screenshot-directory"
   case recordingDirectory = "recording-directory"
+  case firebaseServiceAccount = "firebase-service-account"
 
   public var summary: String {
     switch self {
     case .screenshotDirectory: return "Where `screenshot` writes when no path is given"
     case .recordingDirectory: return "Where `record` writes when no path is given"
+    case .firebaseServiceAccount:
+      return "Service account key used to read Firebase App Distribution"
     }
   }
 }
@@ -50,6 +61,7 @@ public struct SettingsStore: Sendable {
     switch key {
     case .screenshotDirectory: return settings.screenshotDirectory
     case .recordingDirectory: return settings.recordingDirectory
+    case .firebaseServiceAccount: return settings.firebaseServiceAccount
     }
   }
 
@@ -57,11 +69,23 @@ public struct SettingsStore: Sendable {
   /// screenshot or recording does not fail on a path that looked fine.
   @discardableResult
   public func set(_ key: SettingsKey, to path: String) throws -> String {
-    let resolved = try Self.prepareDirectory(path)
     var settings = try load()
+    let resolved: String
     switch key {
-    case .screenshotDirectory: settings.screenshotDirectory = resolved
-    case .recordingDirectory: settings.recordingDirectory = resolved
+    case .screenshotDirectory:
+      resolved = try Self.prepareDirectory(path)
+      settings.screenshotDirectory = resolved
+    case .recordingDirectory:
+      resolved = try Self.prepareDirectory(path)
+      settings.recordingDirectory = resolved
+    case .firebaseServiceAccount:
+      // A key file, not a folder: it has to exist already, and creating one
+      // would be nonsense.
+      resolved = Self.absolutePath(path)
+      guard FileManager.default.fileExists(atPath: resolved) else {
+        throw SimctlBuddyError.missingFile(resolved)
+      }
+      settings.firebaseServiceAccount = resolved
     }
     try save(settings)
     return resolved
@@ -72,6 +96,7 @@ public struct SettingsStore: Sendable {
     switch key {
     case .screenshotDirectory: settings.screenshotDirectory = nil
     case .recordingDirectory: settings.recordingDirectory = nil
+    case .firebaseServiceAccount: settings.firebaseServiceAccount = nil
     }
     try save(settings)
   }

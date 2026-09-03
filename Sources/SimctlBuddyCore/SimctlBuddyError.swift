@@ -36,6 +36,17 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
   case unsupportedAction(DeviceCapability, kind: DeviceKind)
   case devicectlUnavailable
   case wrongBuildForDevice(name: String, kind: DeviceKind, hint: String)
+  case networkFailed(String)
+  case noFirebaseCredential
+  case invalidServiceAccount(String)
+  case firebaseAccessDenied(String)
+  case invalidFirebaseAppID(String)
+  case duplicateFirebaseApp(String)
+  case firebaseAppNotFound(String)
+  case firebaseNeedsPhysicalDevice
+  case releaseHasNoBinary(String)
+  case invalidArchive(String)
+  case deviceNotInProfile(release: String, device: String, profile: String, deviceCount: Int)
 
   public var errorDescription: String? {
     switch self {
@@ -120,6 +131,42 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
     case .invalidScheme(let value):
       return
         "\u{201C}\(value)\u{201D} is not a valid URL scheme. Use letters, digits, +, -, and . starting with a letter."
+    case .networkFailed(let message):
+      return "Could not reach Firebase: \(message)"
+    case .noFirebaseCredential:
+      return """
+        No Google credential found. SimctlBuddy can use any one of these:
+          • a service account key, at GOOGLE_APPLICATION_CREDENTIALS or \
+        `simbuddy config set firebase-service-account <path>`
+          • the gcloud CLI, after `gcloud auth login`
+          • the Firebase CLI, after `firebase login`
+          • an access token in SIMBUDDY_FIREBASE_TOKEN
+        """
+    case .invalidServiceAccount(let message):
+      return "That service account key cannot be used: \(message)"
+    case .firebaseAccessDenied(let message):
+      return message
+    case .invalidFirebaseAppID(let value):
+      return
+        "\u{201C}\(value)\u{201D} is not a Firebase iOS app ID. They look like 1:1234567890:ios:abc123, and are on the app's page in the Firebase console."
+    case .duplicateFirebaseApp(let name):
+      return "A Firebase app called \u{201C}\(name)\u{201D} is already saved. Pass --force to replace it."
+    case .firebaseAppNotFound(let name):
+      return "No saved Firebase app called \u{201C}\(name)\u{201D}. Run `simbuddy firebase apps` to see them."
+    case .firebaseNeedsPhysicalDevice:
+      return
+        "App Distribution builds are signed iOS binaries, so they only install on a physical device. Simulators need a simulator build installed with `simbuddy install`."
+    case .releaseHasNoBinary(let version):
+      return "\(version) has no downloadable binary. It may still be processing, or it may have expired."
+    case .invalidArchive(let message):
+      return message
+    case .deviceNotInProfile(let release, let device, let profile, let deviceCount):
+      return """
+        \(release) is not signed for \(device).
+        Its profile (\(profile)) lists \(deviceCount) device\(deviceCount == 1 ? "" : "s"), and this one is not among them.
+        An ad hoc build only installs on devices registered before it was built, so this needs a rebuild \
+        with the device added. Pass --force to try anyway.
+        """
     }
   }
 }

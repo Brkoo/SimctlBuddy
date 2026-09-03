@@ -31,6 +31,12 @@ public enum TUIPickerPurpose: Equatable, Sendable {
   case savePath
   /// Which app a `$scheme` link should be opened on.
   case linkApp
+  /// Which Firebase app to read builds from.
+  case firebaseApp
+  /// Which Firebase app to remember under a name. The value is an app ID.
+  case firebaseAppToSave
+  /// Which build to install. The value is a release ID.
+  case firebaseRelease(appID: String)
 }
 
 public struct TUIPickerOption: Equatable, Sendable {
@@ -104,6 +110,10 @@ public enum TUIActionID: Equatable, Sendable {
   case saveApp
   case savedPath(SavedPath)
   case savePath
+  case savedFirebaseApp(SavedFirebaseApp)
+  case saveFirebaseApp
+  case firebaseInstall
+  case firebaseStatus
   case boot
   case shutdown
   case installApp
@@ -140,6 +150,8 @@ extension TUIActionID {
     case .savedApp: return .launch
     case .saveApp: return .listApps
     case .savedPath, .savePath, .installApp: return .install
+    case .savedFirebaseApp, .firebaseInstall: return .firebaseInstall
+    case .saveFirebaseApp, .firebaseStatus: return nil
     case .boot: return .boot
     case .shutdown: return .shutdown
     case .launchApp: return .launch
@@ -195,6 +207,9 @@ public enum TUIPromptKind: Equatable, Sendable {
   case savedPathName(path: String)
   case editSavedPath(name: String)
   case confirmRemoveSavedPath(name: String)
+  case firebaseAppID
+  case firebaseAppName(appID: String)
+  case confirmRemoveFirebaseApp(name: String)
   case screenshotDirectory
   case recordingDirectory
   case exportLinks
@@ -205,7 +220,9 @@ public enum TUIPromptKind: Equatable, Sendable {
   /// Confirmations show a question instead of a text field.
   public var isConfirmation: Bool {
     switch self {
-    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath: return true
+    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath,
+      .confirmRemoveFirebaseApp:
+      return true
     default: return false
     }
   }
@@ -315,6 +332,7 @@ public struct TUIState: Sendable {
   public var apps: [SavedApp] = []
   public var paths: [SavedPath] = []
   public var recentPaths: [String] = []
+  public var firebaseApps: [SavedFirebaseApp] = []
   public var settings = Settings.empty
   public var recording: Recorder.Session?
   public var pendingLink: PendingLink?
@@ -372,6 +390,9 @@ public struct TUIState: Sendable {
       if case .savedPath(let saved) = item.id {
         return saved.path.lowercased().contains(needle)
       }
+      if case .savedFirebaseApp(let app) = item.id {
+        return app.appID.lowercased().contains(needle)
+      }
       return false
     }
   }
@@ -404,7 +425,14 @@ public struct TUIState: Sendable {
   }
 
   private var allActions: [TUIActionItem] {
+    // Booting comes first because nothing else works until the device is ready.
+    // A physical device has no boot state, so this section drops out entirely
+    // there and the list starts at LINKS instead.
     var result = [
+      TUIActionItem(id: .boot, title: "Boot / show simulator", hint: "b"),
+      TUIActionItem(id: .shutdown, title: "Shut down simulator", hint: "x"),
+    ]
+    result += [
       TUIActionItem(id: .openDeepLink, title: "Open deep link", hint: "o"),
       TUIActionItem(id: .addSavedLink, title: "Add saved deep link", hint: "a"),
     ]
@@ -423,9 +451,15 @@ public struct TUIState: Sendable {
       TUIActionItem(id: .savedPath($0), title: "⤓ \($0.name)", hint: "↵/e/d")
     }
     result.append(TUIActionItem(id: .savePath, title: "Save .app path", hint: ""))
+    result += firebaseApps.map {
+      TUIActionItem(id: .savedFirebaseApp($0), title: "\u{2601} \($0.name)", hint: "↵/d")
+    }
     result += [
-      TUIActionItem(id: .boot, title: "Boot / show simulator", hint: "b"),
-      TUIActionItem(id: .shutdown, title: "Shut down simulator", hint: "x"),
+      TUIActionItem(id: .firebaseInstall, title: "Install from App Distribution", hint: "f"),
+      TUIActionItem(id: .saveFirebaseApp, title: "Save Firebase app ID", hint: ""),
+      TUIActionItem(id: .firebaseStatus, title: "Firebase setup \u{00B7} sign-in and steps", hint: ""),
+    ]
+    result += [
       TUIActionItem(id: .installApp, title: "Install .app bundle", hint: "i"),
       TUIActionItem(id: .launchApp, title: "Launch app", hint: "L"),
       TUIActionItem(id: .terminateApp, title: "Terminate app", hint: "t"),

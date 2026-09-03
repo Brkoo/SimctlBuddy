@@ -131,11 +131,18 @@ final class DeviceServiceTests: XCTestCase {
     }
   }
 
+  /// Simulators keep every capability except the two that make no sense for
+  /// them: rebooting, and installing a signed device build from App
+  /// Distribution.
   func testSimulatorsKeepEverythingTheyHad() {
     let service = DeviceService()
-    for capability in DeviceCapability.allCases where capability != .reboot {
+    let inapplicable: Set<DeviceCapability> = [.reboot, .firebaseInstall]
+    for capability in DeviceCapability.allCases where !inapplicable.contains(capability) {
       XCTAssertNoThrow(
         try service.require(capability, on: simulator), "simulators lost \(capability)")
+    }
+    for capability in inapplicable {
+      XCTAssertThrowsError(try service.require(capability, on: simulator))
     }
   }
 

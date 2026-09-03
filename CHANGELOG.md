@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0 - 2026-09-03
+
+- Install builds from Firebase App Distribution onto a connected device. Press
+  `f` in the interactive UI, or use `simbuddy firebase releases` and
+  `simbuddy firebase install`. Builds are downloaded, unpacked, and installed in
+  one step, and can be launched straight after with `--launch`
+- Check a build is actually signed for the device before installing it. The
+  provisioning profile inside the build is compared against the device's UDID,
+  so a build that would fail on the phone with a signing error is refused up
+  front with the reason and the fix. `--force` installs anyway
+- Find a Google credential from whatever the machine already has: a service
+  account key, gcloud, the Firebase CLI, or `SIMBUDDY_FIREBASE_TOKEN`.
+  `simbuddy firebase status` reports which one was used, and `doctor` says
+  whether any exists
+- Save Firebase app IDs under names with `simbuddy firebase save`, and pick them
+  from the interactive UI the same way saved links, apps, and build paths work
+- Find app IDs without leaving the terminal: `simbuddy firebase projects` lists
+  your projects, `simbuddy firebase apps --all` walks every one of them, and
+  **Save Firebase app ID** in the interactive UI presents the same list to pick
+  from instead of demanding a pasted ID. Projects you cannot read are reported at
+  the end rather than ending the walk, since access is granted per project
+- Report the four separate causes behind a Firebase permission error — no role,
+  an unset quota project, a disabled API, or an expired credential — instead of
+  passing Google's single message through
+- Hide App Distribution actions on simulators, which cannot run the signed
+  device builds it serves
+- Only name a quota project when the credential actually needs one, and drop the
+  header and retry when Google refuses the project rather than the resource.
+  `x-goog-user-project` requires `serviceusage.services.use`, so sending it
+  unconditionally turned readable projects into permission errors
+- Page through project and app listings, so more than a hundred of either is
+  reported in full
+- Move Boot and Shut down to the top of the actions panel, since nothing else
+  works until the device is ready
+- Fix the activity panel tearing the layout apart when a message contained a
+  newline. The panel positions the cursor per line, so an embedded newline moved
+  it mid-frame — the header vanished and every panel below shifted. Multi-line
+  messages now become separate indented entries, and the renderer splits any that
+  still reach it
+- Only report the Firebase CLI as a credential source when it actually holds a
+  refresh token. Its config file exists as soon as the CLI runs once, so
+  installing it made `status` claim it was signed in and then report no
+  credential in the same breath. An installed but signed-out CLI now says so, and
+  names the command that fixes it
+- Read the token endpoint's error shape as well as the API's, so a refused
+  service account key reports the reason instead of raw JSON
+- Turn the Firebase action into a setup guide rather than a bare status check. It
+  never fails; with no credential it lists the three steps to get going, and once
+  signed in it says what to do next
+
 ## 0.3.0 - 2026-09-03
 
 - Complete a path with `Tab` in every field that holds one: installing an

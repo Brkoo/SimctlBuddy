@@ -37,6 +37,7 @@ Pick a simulator, choose an action, watch it happen — without remembering a si
 - [Install](#install)
 - [Quick start](#quick-start)
 - [The interactive UI](#the-interactive-ui)
+- [Firebase App Distribution](#firebase-app-distribution)
 - [Scripting](#scripting)
 - [Where things are stored](#where-things-are-stored)
 - [Requirements](#requirements)
@@ -122,6 +123,7 @@ results on the right. Actions always target the highlighted simulator.
 | `d` | Delete the highlighted saved link, app, or build |
 | `b` / `x` | Boot or shut down the simulator |
 | `i` | Install an `.app` bundle |
+| `f` | Install a build from Firebase App Distribution |
 | `L` / `t` | Launch or terminate an app |
 | `p` | Send a push notification |
 | `s` | Take a screenshot |
@@ -310,6 +312,125 @@ startup, which is a quick way to confirm what was measured.
 Booting a simulator or installing an app runs in the background with a spinner in
 the activity panel. The interface stays responsive and you can keep navigating
 while it finishes.
+
+## Firebase App Distribution
+
+Install a build straight from App Distribution onto a connected device, without
+opening a browser, downloading an `.ipa` by hand, or unpacking anything.
+
+Press `f`, pick an app, pick a build. The list shows the version, how long ago it
+was uploaded, and the first line of its release notes, and it is searchable like
+every other picker.
+
+### Simulators cannot be reached, and that is not a bug
+
+App Distribution serves `.ipa` files, which are signed iOS binaries. A simulator
+cannot run one. The App Distribution rows only appear when a physical device is
+selected, so the action is never offered where it could only fail.
+
+Simulator builds still install the ordinary way, with `simbuddy install`.
+
+### Signing is checked before the install, not after
+
+An ad hoc build only installs on devices whose UDID was in its provisioning
+profile **when it was built**. Firebase does not re-sign anything, so a device
+registered after the build was made cannot run it — the fix is a rebuild, and no
+tool can work around it.
+
+SimctlBuddy reads the profile inside the downloaded build and compares it against
+the device's UDID before installing, so you get this:
+
+```
+✗ 1.2.0 (88) is not signed for Karlo's iPhone.
+  Its profile (MyApp AdHoc) lists 12 devices, and this one is not among them.
+  An ad hoc build only installs on devices registered before it was built, so
+  this needs a rebuild with the device added. Pass --force to try anyway.
+```
+
+rather than an install that fails on the phone with a signing error. Enterprise
+builds carry no device list and install anywhere, and are reported as such.
+
+### Signing in
+
+SimctlBuddy does not have its own login. It uses a Google credential the machine
+already has, trying each in turn:
+
+| Source | How to get one |
+| --- | --- |
+| `SIMBUDDY_FIREBASE_TOKEN` | An access token, for CI |
+| A service account key | `simbuddy config set firebase-service-account <path>`, or `GOOGLE_APPLICATION_CREDENTIALS` |
+| gcloud | `gcloud auth login` |
+| Firebase CLI | `firebase login` |
+
+`simbuddy firebase status` says which one it found and whether it works. In the
+interactive UI, the **Firebase setup** action does the same and prints the steps
+to follow when nothing is set up yet.
+
+You need to be a **project member** with the Firebase App Distribution Viewer
+role, or higher. Being a tester is not enough — testers can install from the web
+clip but cannot read the API, and that comes back as a permission error only a
+project admin can fix.
+
+Nothing here costs money: App Distribution is free on both the Spark and Blaze
+plans.
+
+### Setting it up
+
+If your team already uploads builds to App Distribution, the project side is
+done — registering the app, clicking **Get started** on the App Distribution
+page, and enabling the API are all prerequisites for uploading. All that is left
+is a credential and the app ID:
+
+```bash
+simbuddy firebase save staging 1:1234567890:ios:abc123
+simbuddy firebase releases staging
+simbuddy firebase install staging --launch
+```
+
+### Finding an app ID
+
+An app ID looks like `1:1234567890:ios:abc123def456`. The middle field is the
+project number, which is why saving the ID is enough — SimctlBuddy never has to
+ask which project an app belongs to.
+
+You do not have to go looking for it. This walks every project you can see:
+
+```bash
+simbuddy firebase apps --all
+```
+
+In the interactive UI, **Save Firebase app ID** does the same thing and presents
+the result as a list to pick from. `Tab` still lets you type an ID by hand.
+
+If you would rather read it off the console: **Project settings › General › Your
+apps**, select the iOS app, and it is the field labelled **App ID**. It is also
+the `GOOGLE_APP_ID` value inside `GoogleService-Info.plist`, if you have one in
+the repo.
+
+Access is granted per project, so `--all` reports any project it could not read
+at the end rather than stopping. A project listed there is one where you lack the
+App Distribution Viewer role — being a tester on it is not enough.
+
+### Commands
+
+```bash
+simbuddy firebase status                    # which credential will be used
+simbuddy firebase projects                  # projects you can see
+simbuddy firebase apps                      # saved apps
+simbuddy firebase apps --all                # every app in every project
+simbuddy firebase apps --project my-project # iOS apps in one project
+simbuddy firebase save staging <appId>      # remember an app ID
+simbuddy firebase forget staging
+simbuddy firebase releases staging          # builds, newest first
+simbuddy firebase releases staging --filter 'displayVersion="1.2.0"'
+simbuddy firebase install staging           # newest build
+simbuddy firebase install staging <releaseId>
+simbuddy firebase install staging --force   # install despite a profile mismatch
+simbuddy firebase clean                     # delete downloaded builds
+```
+
+Downloads are cached under `~/Library/Caches/simbuddy/firebase/`, so installing
+the same build twice only fetches it once.
 
 ## Scripting
 
@@ -582,8 +703,10 @@ one command's options. `simbuddy tui` opens the interactive UI explicitly.
 | `~/.config/simbuddy/links.json` | Saved deep links |
 | `~/.config/simbuddy/apps.json` | Saved app bundle identifiers |
 | `~/.config/simbuddy/paths.json` | Saved `.app` paths, and recently installed ones |
-| `~/.config/simbuddy/settings.json` | Screenshot and recording folders |
+| `~/.config/simbuddy/firebase.json` | Saved Firebase app IDs |
+| `~/.config/simbuddy/settings.json` | Screenshot and recording folders, Firebase service account |
 | `~/.config/simbuddy/link-values.json` | The last value used for each link parameter |
+| `~/Library/Caches/simbuddy/firebase/` | Unpacked App Distribution builds |
 
 All of them are plain JSON, safe to edit, commit, or sync.
 

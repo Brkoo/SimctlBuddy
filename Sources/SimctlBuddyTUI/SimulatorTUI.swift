@@ -23,6 +23,7 @@ private struct JobResult: Sendable {
   var apps: [SavedApp]?
   var paths: [SavedPath]?
   var recentPaths: [String]?
+  var firebaseApps: [SavedFirebaseApp]?
   var settings: Settings?
 }
 
@@ -52,6 +53,7 @@ public final class SimulatorTUI {
   private let linkStore: LinkStore
   private let appStore: AppStore
   private let pathStore: PathStore
+  private let firebaseStore: FirebaseStore
   private let settingsStore: SettingsStore
   private let valueStore: LinkValueStore
   private let recorder: Recorder
@@ -69,6 +71,7 @@ public final class SimulatorTUI {
     linkStore: LinkStore = LinkStore(),
     appStore: AppStore = AppStore(),
     pathStore: PathStore = PathStore(),
+    firebaseStore: FirebaseStore = FirebaseStore(),
     settingsStore: SettingsStore = SettingsStore(),
     valueStore: LinkValueStore = LinkValueStore(),
     recorder: Recorder = Recorder(),
@@ -79,6 +82,7 @@ public final class SimulatorTUI {
     self.linkStore = linkStore
     self.appStore = appStore
     self.pathStore = pathStore
+    self.firebaseStore = firebaseStore
     self.settingsStore = settingsStore
     self.valueStore = valueStore
     self.recorder = recorder
@@ -149,6 +153,7 @@ public final class SimulatorTUI {
     let linkStore = self.linkStore
     let appStore = self.appStore
     let pathStore = self.pathStore
+    let firebaseStore = self.firebaseStore
     let settingsStore = self.settingsStore
     jobQueue.async {
       var result = JobResult()
@@ -183,6 +188,7 @@ public final class SimulatorTUI {
         let book = try? pathStore.load()
         result.paths = book?.saved
         result.recentPaths = book?.recent
+        result.firebaseApps = try? firebaseStore.load()
         result.settings = try? settingsStore.load()
       }
       mailbox.post(result)
@@ -198,6 +204,7 @@ public final class SimulatorTUI {
       if let apps = result.apps { state.apps = apps }
       if let paths = result.paths { state.paths = paths }
       if let recentPaths = result.recentPaths { state.recentPaths = recentPaths }
+      if let firebaseApps = result.firebaseApps { state.firebaseApps = firebaseApps }
       if let settings = result.settings { state.settings = settings }
       if let installed = result.installedApps { applyInstalledApps(installed) }
       if let options = result.pickerOptions { applyPickerOptions(options) }
@@ -326,6 +333,8 @@ public final class SimulatorTUI {
       execute(.shutdown)
     case .text("i"):
       openInstallPicker()
+    case .text("f"):
+      openFirebaseAppPicker()
     case .text("L"):
       beginPrompt(.launchApp, label: "Bundle identifier")
     case .text("t"):
@@ -431,6 +440,10 @@ public final class SimulatorTUI {
     case .savePath: beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
     case .linkApp:
       appendOutput("Pick an app for this link, or press Esc", error: true)
+    case .firebaseApp, .firebaseAppToSave:
+      beginPrompt(.firebaseAppID, label: "Firebase app ID")
+    case .firebaseRelease:
+      appendOutput("Pick a build, or press Esc", error: true)
     }
   }
 
@@ -454,6 +467,12 @@ public final class SimulatorTUI {
       beginPrompt(.savedPathName(path: bundleIdentifier), label: "Name for this build")
     case .linkApp:
       chooseLinkApp(bundleIdentifier)
+    case .firebaseApp:
+      openFirebaseReleasePicker(appID: bundleIdentifier)
+    case .firebaseAppToSave:
+      beginPrompt(.firebaseAppName(appID: bundleIdentifier), label: "Name for this app")
+    case .firebaseRelease(let appID):
+      installFirebaseRelease(bundleIdentifier, appID: appID)
     }
   }
 
@@ -833,6 +852,12 @@ public final class SimulatorTUI {
       openBundlePicker(.saveApp, title: "Save app bundle ID")
     case .savePath:
       beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
+    case .firebaseInstall:
+      openFirebaseAppPicker()
+    case .saveFirebaseApp:
+      openFirebaseAppBrowser()
+    case .firebaseStatus:
+      showFirebaseStatus()
     case .screenshotDirectory:
       beginPrompt(
         .screenshotDirectory, label: "Folder for screenshots",
@@ -979,6 +1004,27 @@ public final class SimulatorTUI {
         try store.remove(name: name)
         return .reload("Deleted saved build \(name)")
       }
+    case .firebaseAppID:
+      // Validate before asking for a name, so a typo is caught on the field it
+      // was made in.
+      do {
+        let identifier = try FirebaseApp.validate(value)
+        beginPrompt(.firebaseAppName(appID: identifier), label: "Name for this app")
+      } catch {
+        appendOutput(error.localizedDescription, error: true)
+      }
+    case .firebaseAppName(let appID):
+      let store = firebaseStore
+      startJob("Saving Firebase app") {
+        try store.add(name: value, appID: appID, force: true)
+        return .reload("Saved Firebase app \(value) \u{2192} \(appID)")
+      }
+    case .confirmRemoveFirebaseApp(let name):
+      let store = firebaseStore
+      startJob("Deleting \(name)") {
+        try store.remove(name: name)
+        return .reload("Deleted saved Firebase app \(name)")
+      }
     case .screenshotDirectory:
       setDirectory(.screenshotDirectory, to: value)
     case .recordingDirectory:
@@ -1014,6 +1060,14 @@ public final class SimulatorTUI {
       install(path: saved.path)
     case .savePath:
       beginPrompt(.savedPathValue(name: ""), label: "Path to .app")
+    case .savedFirebaseApp(let app):
+      openFirebaseReleasePicker(appID: app.appID)
+    case .saveFirebaseApp:
+      openFirebaseAppBrowser()
+    case .firebaseInstall:
+      openFirebaseAppPicker()
+    case .firebaseStatus:
+      showFirebaseStatus()
     case .savedLink(let link):
       beginLink(name: link.name, url: link.url, apps: link.apps)
     case .boot:
@@ -1190,6 +1244,171 @@ public final class SimulatorTUI {
     }
   }
 
+  // MARK: - Firebase App Distribution
+
+  /// Picks which Firebase app to read builds from.
+  ///
+  /// Saved apps only: browsing every project would need two more API calls
+  /// before anything useful appears on screen, and the app is the part people
+  /// keep rather than rediscover.
+  private func openFirebaseAppPicker() {
+    guard selection(for: .firebaseInstall) != nil else { return }
+    guard !state.firebaseApps.isEmpty else {
+      appendOutput("No saved Firebase apps yet — add one first", error: true)
+      beginPrompt(.firebaseAppID, label: "Firebase app ID")
+      return
+    }
+    state.picker = TUIPicker(
+      purpose: .firebaseApp,
+      title: "App Distribution \u{00B7} pick an app",
+      footnote: "Tab types an app ID instead",
+      loadingMessage: "",
+      options: state.firebaseApps.map {
+        TUIPickerOption(value: $0.appID, label: $0.name, detail: $0.appID)
+      },
+      isLoading: false
+    )
+  }
+
+  /// Offers every Firebase app this credential can see, so saving one is a
+  /// choice rather than a paste.
+  ///
+  /// Walking every project costs a call each, so the list arrives in the
+  /// background; `Tab` still types an ID by hand for anyone who has one.
+  private func openFirebaseAppBrowser() {
+    let saved = Set(state.firebaseApps.map(\.appID))
+    state.picker = TUIPicker(
+      purpose: .firebaseAppToSave,
+      title: "Save a Firebase app \u{00B7} pick one",
+      footnote: "Tab types an app ID by hand \u{00B7} IDs are in the console under Project settings \u{203A} Your apps",
+      loadingMessage: "Reading your Firebase projects",
+      options: [],
+      isLoading: true
+    )
+    startJob("Reading Firebase apps") {
+      let listings = try FirebaseDistribution().allApps()
+      let options = listings.flatMap { listing in
+        listing.apps.map { app in
+          TUIPickerOption(
+            value: app.appID,
+            label: app.displayName,
+            detail: saved.contains(app.appID)
+              ? "\(listing.projectID) \u{00B7} already saved"
+              : listing.projectID
+          )
+        }
+      }
+      guard !options.isEmpty else {
+        let refused = listings.filter { !$0.isReadable }
+        return .pickerOptions(
+          [],
+          message: refused.isEmpty
+            ? "No iOS apps in any project you can see"
+            : "No readable projects. These need the App Distribution Viewer role: "
+              + refused.map(\.projectID).joined(separator: ", "))
+      }
+      return .pickerOptions(options)
+    }
+  }
+
+  /// Lists the builds for an app, newest first.
+  private func openFirebaseReleasePicker(appID: String) {
+    guard let device = selection(for: .firebaseInstall) else { return }
+    state.picker = TUIPicker(
+      purpose: .firebaseRelease(appID: appID),
+      title: "App Distribution \u{00B7} pick a build",
+      footnote: "Newest first \u{00B7} installs on \(device.name)",
+      loadingMessage: "Reading builds from Firebase",
+      options: [],
+      isLoading: true
+    )
+    let store = self.firebaseStore
+    startJob("Reading builds") {
+      let releases = try FirebaseDistribution(store: store).releases(app: appID, limit: 50)
+      guard !releases.isEmpty else {
+        return .pickerOptions([], message: "No builds have been uploaded for this app")
+      }
+      return .pickerOptions(
+        releases.map { release in
+          var detail = release.createTime.map(Self.relativeDate) ?? release.releaseID
+          if let summary = release.summaryLine {
+            detail += " \u{00B7} \(summary)"
+          }
+          return TUIPickerOption(
+            value: release.releaseID,
+            label: release.versionLabel,
+            detail: detail
+          )
+        })
+    }
+  }
+
+  /// Downloads a build and installs it, after checking it is signed for this
+  /// device. Refusing here beats a signing failure on the phone.
+  private func installFirebaseRelease(_ releaseID: String, appID: String) {
+    guard let device = selection(for: .firebaseInstall) else { return }
+    let store = self.firebaseStore
+    let service = self.service
+    startJob("Installing from App Distribution") {
+      let distribution = FirebaseDistribution(service: service, store: store)
+      let report = try distribution.install(releaseID: releaseID, app: appID, on: device)
+      var details = report.notes
+      if let profile = report.profile, let name = profile.name {
+        details.append("Signed with \(name)")
+      }
+      return .reload(
+        "Installed \(report.release.versionLabel) on \(device.name)", details: details)
+    }
+  }
+
+  /// Says where App Distribution stands and what to do next.
+  ///
+  /// Deliberately never fails: someone pressing this has usually not set it up
+  /// yet, and a red error tells them nothing they can act on. Missing pieces are
+  /// reported as the next step instead.
+  private func showFirebaseStatus() {
+    let savedApps = state.firebaseApps
+    startJob("Checking Firebase sign-in") {
+      let credentials = FirebaseCredentials()
+      let sources = credentials.availableSources()
+
+      guard let token = try? credentials.token() else {
+        return .report(
+          "Not signed in to Firebase \u{2014} 3 steps to set it up",
+          details: [
+            "1. Sign in with ONE of these, in a normal terminal:",
+            "     gcloud auth login",
+            "     firebase login",
+            "     simbuddy config set firebase-service-account <key.json>",
+            "2. Save an app: the \u{201C}Save Firebase app ID\u{201D} action below.",
+            "     It lists every app you can see, so nothing needs pasting.",
+            "3. Select a connected device, then press f to pick a build.",
+            "",
+            sources.isEmpty
+              ? "Nothing found on this machine yet."
+              : "Found, but not usable: \(sources.joined(separator: ", "))",
+          ])
+      }
+
+      var details = sources
+      if savedApps.isEmpty {
+        details.append(
+          "No apps saved yet \u{2014} \u{201C}Save Firebase app ID\u{201D} lists every app you can see.")
+      } else {
+        details.append(
+          "\(savedApps.count) app\(savedApps.count == 1 ? "" : "s") saved. "
+            + "Select a connected device and press f to install a build.")
+      }
+      return .report("Signed in through \(token.source.label)", details: details)
+    }
+  }
+
+  private static func relativeDate(_ date: Date) -> String {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter.localizedString(for: date, relativeTo: Date())
+  }
+
   private func appendOutput(_ message: String, error: Bool = false) {
     appendReport(message, details: [], error: error)
   }
@@ -1197,11 +1416,33 @@ public final class SimulatorTUI {
   /// Newest entries sit at the top, so detail lines go in before their headline
   /// to keep the block reading top-down.
   private func appendReport(_ message: String, details: [String], error: Bool) {
-    for line in details.reversed() {
+    for line in details.flatMap(Self.entryLines).reversed() {
       state.output.insert("  \(line)", at: 0)
     }
-    state.output.insert("\(error ? "✗" : "✓") \(message)", at: 0)
+    // A message can arrive with newlines in it — several errors explain
+    // themselves over more than one line. Each becomes its own entry, indented
+    // under the headline so the block still reads as one report.
+    let lines = Self.entryLines(message)
+    for line in lines.dropFirst().reversed() {
+      state.output.insert("  \(line)", at: 0)
+    }
+    state.output.insert("\(error ? "✗" : "✓") \(lines.first ?? message)", at: 0)
     state.output = Array(state.output.prefix(60))
+  }
+
+  /// Breaks text into single-line entries.
+  ///
+  /// Nothing in the activity panel may contain a newline or a tab: the panel is
+  /// drawn by positioning the cursor per line, so a stray control character
+  /// moves it mid-frame and tears the rest of the layout apart.
+  static func entryLines(_ value: String) -> [String] {
+    value
+      .components(separatedBy: .newlines)
+      .map {
+        $0.replacingOccurrences(of: "\t", with: "    ")
+          .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+      }
+      .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
   }
 
 }

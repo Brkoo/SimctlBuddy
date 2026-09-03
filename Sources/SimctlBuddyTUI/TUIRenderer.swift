@@ -529,6 +529,15 @@ public struct TUIRenderer: Sendable {
   /// Wraps on word boundaries, preserving the entry's own indent and indenting
   /// continuation rows two columns further so blocks stay readable.
   private func wrap(_ value: String, width: Int) -> [String] {
+    // A newline here would move the terminal cursor in the middle of a frame,
+    // so anything multi-line is split before it can be drawn. The panel's own
+    // entries are already single lines; this is the backstop.
+    if value.contains(where: \.isNewline) {
+      return value
+        .components(separatedBy: .newlines)
+        .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        .flatMap { wrap($0, width: width) }
+    }
     let body = value.drop(while: { $0 == " " })
     let indent = String(repeating: " ", count: value.count - body.count)
     let bodyWidth = max(4, width - indent.count)
@@ -601,6 +610,8 @@ public struct TUIRenderer: Sendable {
     case .openDeepLink, .addSavedLink, .savedLink, .exportLinks, .importLinks: return "LINKS"
     case .savedApp, .saveApp: return "SAVED APPS"
     case .savedPath, .savePath: return "SAVED BUILDS"
+    case .savedFirebaseApp, .saveFirebaseApp, .firebaseInstall, .firebaseStatus:
+      return "APP DISTRIBUTION"
     case .boot, .shutdown: return "DEVICE"
     case .installApp, .launchApp, .terminateApp, .listApps, .listRunningApps, .push:
       return "APPS"
@@ -630,6 +641,7 @@ public struct TUIRenderer: Sendable {
       ("b", "Boot selected device"),
       ("x", "Shut down selected device"),
       ("i", "Install .app bundle"),
+      ("f", "Install a build from App Distribution"),
       ("L", "Launch app by bundle ID"),
       ("t", "Terminate app by bundle ID"),
       ("s", "Take screenshot"),
@@ -884,6 +896,9 @@ public struct TUIRenderer: Sendable {
     case .savedPathName: return "Save build · 2 of 2"
     case .editSavedPath(let name): return "Edit \(name)"
     case .confirmRemoveSavedPath: return "Delete saved build"
+    case .firebaseAppID: return "Save Firebase app · 1 of 2"
+    case .firebaseAppName: return "Save Firebase app · 2 of 2"
+    case .confirmRemoveFirebaseApp: return "Delete saved Firebase app"
     case .screenshotDirectory: return "Screenshot folder"
     case .recordingDirectory: return "Recording folder"
     case .exportLinks: return "Export deep links"
@@ -906,7 +921,11 @@ public struct TUIRenderer: Sendable {
     case .pushBundle, .privacyBundle, .privacyResetBundle: return "com.example.MyApp"
     case .pushPayload: return "~/payloads/welcome.apns"
     case .privacyService: return "photos, camera, microphone, contacts, location"
-    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath: return ""
+    case .confirmRemoveSavedLink, .confirmRemoveSavedApp, .confirmRemoveSavedPath,
+      .confirmRemoveFirebaseApp:
+      return ""
+    case .firebaseAppID: return "1:1234567890:ios:abc123 (console: Project settings › Your apps)"
+    case .firebaseAppName: return "Staging"
     case .savedAppName: return "Checkout build"
     case .editSavedAppBundle: return "com.example.MyApp"
     case .savedPathValue, .editSavedPath: return "~/Library/Developer/Xcode/DerivedData/…/MyApp.app"
