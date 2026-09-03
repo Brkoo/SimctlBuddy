@@ -2,6 +2,11 @@
 
 ## 0.4.0 - 2026-09-03
 
+- Show the whole deep link while filling in its parameters, instead of only the
+  link's name. The value being typed appears in place as it is typed, values
+  already given are marked as settled, and parameters still to come are marked
+  as waiting — so it is obvious where a value lands and what the finished link
+  will look like. The field also counts, as "2 of 3"
 - Install builds from Firebase App Distribution onto a connected device. Press
   `f` in the interactive UI, or use `simbuddy firebase releases` and
   `simbuddy firebase install`. Builds are downloaded, unpacked, and installed in

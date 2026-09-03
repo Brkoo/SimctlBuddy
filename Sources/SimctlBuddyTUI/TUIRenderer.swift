@@ -706,6 +706,12 @@ public struct TUIRenderer: Sendable {
       Line(segments: []),
       Line(segments: [Segment(" \(prompt.label)", .bold)]),
     ]
+    // Showing the whole link, with the parameter in hand highlighted, is what
+    // tells someone where the value they are typing will land.
+    if let context = prompt.linkContext {
+      body.append(Line(segments: []))
+      body += previewLines(context.preview(currentValue: prompt.value), width: width - 4)
+    }
     if prompt.kind.isConfirmation {
       body += [
         Line(segments: []),
@@ -724,7 +730,9 @@ public struct TUIRenderer: Sendable {
       if let note = prompt.note {
         body.append(
           Line(segments: [Segment(" \(note)", prompt.candidates.isEmpty ? .red : .dim)]))
-      } else {
+      } else if prompt.linkContext == nil {
+        // A generic example is worse than useless once the link itself is on
+        // screen: it suggests one shape for every parameter regardless of name.
         body.append(
           Line(segments: [Segment(" Example: \(promptPlaceholder(for: prompt.kind))", .dim)]))
       }
@@ -763,6 +771,50 @@ public struct TUIRenderer: Sendable {
     )
 
     return place(dialog, width: width, height: height, columns: columns, rows: rows)
+  }
+
+  /// Lays the link preview out across as many rows as it needs, breaking
+  /// between pieces so a highlighted parameter is never split across rows.
+  private func previewLines(_ parts: [LinkPreviewPart], width: Int) -> [Line] {
+    var lines = [Line]()
+    var current = [Segment(" ", nil)]
+    var used = 1
+
+    func flush() {
+      if current.count > 1 { lines.append(Line(segments: current)) }
+      current = [Segment("   ", nil)]
+      used = 3
+    }
+
+    for part in parts {
+      var remaining = Substring(part.text)
+      while !remaining.isEmpty {
+        // At most three rows: a link long enough to need more has stopped being
+        // readable as one thing anyway.
+        if lines.count >= 3 { return lines }
+        let room = width - used
+        if room <= 0 {
+          flush()
+          continue
+        }
+        let take = remaining.prefix(room)
+        current.append(Segment(String(take), style(for: part.kind)))
+        used += columns(of: String(take))
+        remaining = remaining.dropFirst(take.count)
+        if !remaining.isEmpty { flush() }
+      }
+    }
+    flush()
+    return lines
+  }
+
+  private func style(for kind: LinkPreviewPart.Kind) -> Style {
+    switch kind {
+    case .text: return .dim
+    case .filled: return .green
+    case .current: return .boldYellow
+    case .pending: return .magenta
+    }
   }
 
   /// Positions an overlay so it always lands inside the window. Centring alone

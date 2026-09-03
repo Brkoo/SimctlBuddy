@@ -245,6 +245,41 @@ public enum TUIPromptKind: Equatable, Sendable {
   }
 }
 
+/// Enough of a half-filled deep link to draw it above the field.
+///
+/// Carried on the prompt rather than rendered once, so the preview can follow
+/// what is being typed instead of showing a stale link.
+public struct LinkPromptContext: Equatable, Sendable {
+  public let template: LinkTemplate
+  public let scheme: String?
+  public let values: [String: String]
+  public let parameter: String
+  /// Which of the link's parameters this is, for "2 of 3".
+  public let position: Int
+  public let total: Int
+
+  public init(
+    template: LinkTemplate,
+    scheme: String?,
+    values: [String: String],
+    parameter: String,
+    position: Int,
+    total: Int
+  ) {
+    self.template = template
+    self.scheme = scheme
+    self.values = values
+    self.parameter = parameter
+    self.position = position
+    self.total = total
+  }
+
+  public func preview(currentValue: String) -> [LinkPreviewPart] {
+    template.preview(
+      scheme: scheme, values: values, current: parameter, currentValue: currentValue)
+  }
+}
+
 public struct TUIPrompt: Equatable, Sendable {
   public let kind: TUIPromptKind
   public let label: String
@@ -253,11 +288,20 @@ public struct TUIPrompt: Equatable, Sendable {
   /// typing resumes, so it never describes stale text.
   public var candidates: [String] = []
   public var note: String?
+  /// Set while filling in a deep link's parameters, so the field can show where
+  /// the value lands.
+  public var linkContext: LinkPromptContext?
 
-  public init(kind: TUIPromptKind, label: String, value: String = "") {
+  public init(
+    kind: TUIPromptKind,
+    label: String,
+    value: String = "",
+    linkContext: LinkPromptContext? = nil
+  ) {
     self.kind = kind
     self.label = label
     self.value = value
+    self.linkContext = linkContext
   }
 
   public var supportsCompletion: Bool { kind.pathFilter != nil }

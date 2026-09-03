@@ -754,3 +754,143 @@ final class AppBrowserPickerTests: XCTestCase {
     XCTAssertNotEqual(TUIPickerPurpose.firebaseAppToSave, .firebaseApp)
   }
 }
+
+/// Filling in a parameter used to show only the link's name, so a value was
+/// typed blind. The whole link is now drawn with the parameter in hand marked.
+final class LinkParameterPreviewTests: XCTestCase {
+  private let template = LinkTemplate.parse(
+    "$scheme://automation?slot=$slot&user=$user&mode=live")
+
+  private func context(
+    scheme: String? = "myapp",
+    values: [String: String] = [:],
+    parameter: String = "slot"
+  ) -> LinkPromptContext {
+    LinkPromptContext(
+      template: template, scheme: scheme, values: values,
+      parameter: parameter, position: 1, total: 2)
+  }
+
+  private func text(_ parts: [LinkPreviewPart]) -> String {
+    parts.map(\.text).joined()
+  }
+
+  func testTheWholeLinkIsShownWithPlaceholdersForWhatIsUnfilled() {
+    XCTAssertEqual(
+      text(context().preview(currentValue: "")),
+      "myapp://automation?slot=$slot&user=$user&mode=live")
+  }
+
+  /// The link follows what is being typed, so the value appears in place.
+  func testTheTypedValueAppearsInPlace() {
+    XCTAssertEqual(
+      text(context().preview(currentValue: "staging5")),
+      "myapp://automation?slot=staging5&user=$user&mode=live")
+  }
+
+  func testTheParameterBeingTypedIsMarkedApartFromTheRest() {
+    let parts = context().preview(currentValue: "staging5")
+    let current = parts.filter { $0.kind == .current }
+    XCTAssertEqual(current.map(\.text), ["staging5"])
+  }
+
+  func testAlreadyAnsweredParametersAreMarkedFilled() {
+    let parts = context(values: ["user": "karlo"], parameter: "slot")
+      .preview(currentValue: "")
+    XCTAssertTrue(parts.contains { $0.kind == .filled && $0.text == "karlo" })
+    XCTAssertTrue(parts.contains { $0.kind == .pending && $0.text == "$slot" } == false)
+    XCTAssertTrue(parts.contains { $0.kind == .current && $0.text == "$slot" })
+  }
+
+  func testParametersStillToComeAreMarkedPending() {
+    let parts = context(parameter: "slot").preview(currentValue: "x")
+    XCTAssertTrue(parts.contains { $0.kind == .pending && $0.text == "$user" })
+  }
+
+  /// An unresolved scheme is a placeholder like any other, not a failure.
+  func testAnUnknownSchemeIsShownAsAPlaceholder() {
+    let parts = context(scheme: nil).preview(currentValue: "")
+    XCTAssertTrue(parts.contains { $0.kind == .pending && $0.text == "$scheme" })
+    XCTAssertTrue(text(parts).hasPrefix("$scheme://"))
+  }
+
+  func testADefaultIsShownAsTheValueThatWillBeUsed() {
+    let withDefault = LinkTemplate.parse("myapp://go?slot=$slot=staging5&id=$id")
+    let parts = withDefault.preview(values: [:], current: "id", currentValue: "")
+    XCTAssertTrue(parts.contains { $0.kind == .filled && $0.text == "staging5" })
+  }
+
+  /// Preview never throws, unlike render: showing an incomplete link is the job.
+  func testPreviewSurvivesALinkThatCannotRenderYet() {
+    let parts = LinkTemplate.parse("$scheme://x/$a/$b").preview()
+    XCTAssertEqual(text(parts), "$scheme://x/$a/$b")
+  }
+
+  func testTheDialogDrawsTheLinkAndHighlightsTheValue() {
+    var state = TUIState(devices: [
+      Device(name: "iPhone 16", udid: "S1", state: "Booted", isAvailable: true)
+    ])
+    state.prompt = TUIPrompt(
+      kind: .linkParameter(link: "automation", parameter: "slot"),
+      label: "Value for $slot · 1 of 2",
+      value: "staging5",
+      linkContext: context()
+    )
+    // Each piece carries its own colour, so escape codes sit between them and
+    // the link only reads as one string once they are stripped.
+    let screen = Self.stripANSI(TUIRenderer().render(state: state, columns: 120, rows: 32))
+    XCTAssertTrue(screen.contains("myapp://automation?slot=staging5&user=$user&mode=live"))
+    XCTAssertTrue(screen.contains("1 of 2"))
+  }
+
+  /// The highlight is the point, so check the typed value really is coloured
+  /// differently from the literal text around it.
+  func testTheTypedValueIsColouredApartFromTheLinkAroundIt() {
+    var state = TUIState(devices: [
+      Device(name: "iPhone 16", udid: "S1", state: "Booted", isAvailable: true)
+    ])
+    state.prompt = TUIPrompt(
+      kind: .linkParameter(link: "automation", parameter: "slot"),
+      label: "Value for $slot",
+      value: "staging5",
+      linkContext: context()
+    )
+    let screen = TUIRenderer().render(state: state, columns: 120, rows: 32)
+    guard let range = screen.range(of: "staging5") else {
+      return XCTFail("the typed value was not drawn")
+    }
+    // An escape sequence immediately precedes it, rather than it running on
+    // from the surrounding literal text.
+    XCTAssertTrue(screen[..<range.lowerBound].hasSuffix("m"))
+  }
+
+  private static func stripANSI(_ value: String) -> String {
+    value.replacingOccurrences(
+      of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+  }
+}
+
+final class LinkPreviewReplacesExampleTests: XCTestCase {
+  private func screen(withContext: Bool) -> String {
+    var state = TUIState(devices: [
+      Device(name: "iPhone 16", udid: "S1", state: "Booted", isAvailable: true)
+    ])
+    state.prompt = TUIPrompt(
+      kind: .linkParameter(link: "automation", parameter: "slot"),
+      label: "Value for $slot",
+      value: "",
+      linkContext: withContext
+        ? LinkPromptContext(
+          template: LinkTemplate.parse("$scheme://go?slot=$slot"),
+          scheme: "myapp", values: [:], parameter: "slot", position: 1, total: 1)
+        : nil
+    )
+    return TUIRenderer().render(state: state, columns: 100, rows: 30)
+  }
+
+  /// The link itself says more than a canned example ever could.
+  func testTheGenericExampleGivesWayToTheLink() {
+    XCTAssertFalse(screen(withContext: true).contains("Example:"))
+    XCTAssertTrue(screen(withContext: false).contains("Example:"))
+  }
+}

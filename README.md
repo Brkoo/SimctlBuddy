@@ -253,6 +253,22 @@ what a link needs before you run it.
 Saving an app now also asks for its URL scheme — leave it empty for an app that
 has none, and `$scheme` links simply will not offer it.
 
+
+While a parameter is being filled in, the whole link is shown above the field:
+
+```
+┌ automation · $slot ──────────────────────────────────┐
+│ Value for $slot · 1 of 2                             │
+│                                                      │
+│ myapp://automation?slot=staging5&user=$user          │
+│ › staging5▌                                          │
+└──────────────────────────────────────────────────────┘
+```
+
+The value being typed appears in place as it is typed, what is already settled
+is coloured apart from what is still waiting, and the field says which parameter
+of how many this is. Nothing has to be remembered between steps.
+
 ### Sharing deep links
 
 **Export deep links** writes your saved links to a file, and **Import deep

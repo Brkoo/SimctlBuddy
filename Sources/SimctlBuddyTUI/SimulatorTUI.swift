@@ -685,10 +685,24 @@ public final class SimulatorTUI {
   private func advanceLink() {
     guard let pending = state.pendingLink else { return }
     if let next = pending.remaining.first {
+      // Counting from the template rather than from what is left means the
+      // position holds steady even when a parameter appears more than once.
+      let total = pending.template.parameters.count
+      let position = max(1, total - pending.remaining.count + 1)
       beginPrompt(
         .linkParameter(link: pending.linkName, parameter: next.name),
-        label: "Value for $\(next.name)",
-        value: valueStore.startingValue(for: next, link: pending.memoryKey)
+        label: total > 1
+          ? "Value for $\(next.name) \u{00B7} \(position) of \(total)"
+          : "Value for $\(next.name)",
+        value: valueStore.startingValue(for: next, link: pending.memoryKey),
+        linkContext: LinkPromptContext(
+          template: pending.template,
+          scheme: pending.app?.scheme,
+          values: pending.values,
+          parameter: next.name,
+          position: position,
+          total: total
+        )
       )
       return
     }
@@ -895,8 +909,14 @@ public final class SimulatorTUI {
     }
   }
 
-  private func beginPrompt(_ kind: TUIPromptKind, label: String, value: String = "") {
-    state.prompt = TUIPrompt(kind: kind, label: label, value: value)
+  private func beginPrompt(
+    _ kind: TUIPromptKind,
+    label: String,
+    value: String = "",
+    linkContext: LinkPromptContext? = nil
+  ) {
+    state.prompt = TUIPrompt(
+      kind: kind, label: label, value: value, linkContext: linkContext)
   }
 
   private func editSelectedEntry() {

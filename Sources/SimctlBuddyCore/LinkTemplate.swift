@@ -232,3 +232,82 @@ public struct LinkTemplate: Equatable, Sendable {
     return value.allSatisfy { $0.isLetter || $0.isNumber || "+-.".contains($0) }
   }
 }
+
+/// One piece of a link shown while its parameters are being filled in.
+public struct LinkPreviewPart: Equatable, Sendable {
+  public enum Kind: Equatable, Sendable {
+    /// Literal text from the template.
+    case text
+    /// A parameter that already has a value, or a default that will be used.
+    case filled
+    /// The parameter being typed right now.
+    case current
+    /// A parameter still to be asked for.
+    case pending
+  }
+
+  public let text: String
+  public let kind: Kind
+
+  public init(text: String, kind: Kind) {
+    self.text = text
+    self.kind = kind
+  }
+}
+
+extension LinkTemplate {
+  /// The whole link as it stands, for showing above the field while a value is
+  /// being typed.
+  ///
+  /// Unlike `render`, nothing here throws: the point is to show a link that is
+  /// still incomplete, with what is missing marked rather than refused. The
+  /// parameter in hand is marked separately so it can be highlighted, which is
+  /// what tells someone where the value they are typing will land.
+  public func preview(
+    scheme: String? = nil,
+    values: [String: String] = [:],
+    current: String? = nil,
+    currentValue: String = ""
+  ) -> [LinkPreviewPart] {
+    var defaults = [String: String]()
+    for parameter in parameters {
+      if let value = parameter.defaultValue { defaults[parameter.name] = value }
+    }
+
+    var parts = [LinkPreviewPart]()
+    func append(_ text: String, _ kind: LinkPreviewPart.Kind) {
+      guard !text.isEmpty else { return }
+      // Runs of the same kind read as one piece, which keeps the highlighting
+      // from fragmenting across adjacent literal segments.
+      if let last = parts.last, last.kind == kind {
+        parts[parts.count - 1] = LinkPreviewPart(text: last.text + text, kind: kind)
+      } else {
+        parts.append(LinkPreviewPart(text: text, kind: kind))
+      }
+    }
+
+    for segment in segments {
+      switch segment {
+      case .text(let text):
+        append(text, .text)
+      case .scheme:
+        if let scheme, !scheme.isEmpty {
+          append(scheme, .filled)
+        } else {
+          append("$scheme", .pending)
+        }
+      case .parameter(let parameter):
+        if parameter.name == current {
+          // Echoing what is being typed is the whole point: the link updates
+          // under the cursor as the value is entered.
+          append(currentValue.isEmpty ? "$\(parameter.name)" : currentValue, .current)
+        } else if let value = values[parameter.name] ?? defaults[parameter.name] {
+          append(value, .filled)
+        } else {
+          append("$\(parameter.name)", .pending)
+        }
+      }
+    }
+    return parts
+  }
+}
