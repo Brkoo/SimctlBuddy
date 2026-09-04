@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-09-04
 
 - Set how much of the window the devices and actions panels take, with
   `config set device-panel-width` and `config set action-panel-width`. Both

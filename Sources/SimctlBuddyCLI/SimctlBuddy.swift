@@ -12,7 +12,7 @@ struct SimctlBuddy: ParsableCommand {
       Run without arguments for the interactive terminal UI. Scriptable commands
       and reusable deep-link aliases are also available.
       """,
-    version: "0.4.0",
+    version: "0.5.0",
     subcommands: [
       Interactive.self,
       Devices.self,
