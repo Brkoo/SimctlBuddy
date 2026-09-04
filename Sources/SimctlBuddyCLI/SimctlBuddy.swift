@@ -963,6 +963,10 @@ struct ConfigList: ParsableCommand {
         value = settings.recordingDirectory ?? "(working directory)"
       case .firebaseServiceAccount:
         value = settings.firebaseServiceAccount ?? "(none)"
+      case .devicePanelWidth:
+        value = settings.devicePanelWidth.map { String(format: "%.2f", $0) } ?? "(default)"
+      case .actionPanelWidth:
+        value = settings.actionPanelWidth.map { String(format: "%.2f", $0) } ?? "(default)"
       }
       print("\(name)  \(value)")
     }

@@ -302,6 +302,24 @@ like Lazygit:
 The status bar shows the active mode. `full` hides the activity panel, so switch
 back to see command output.
 
+### Panel widths
+
+The devices and actions panels take a fixed share of the window. If your device
+names or saved-link names keep truncating, give them more:
+
+```bash
+simbuddy config set device-panel-width 0.4
+simbuddy config set action-panel-width 0.35
+```
+
+Both take a fraction or a percentage — `0.4`, `40%`, and a bare `40` all mean the
+same thing — between 0.1 and 0.6. `simbuddy config unset device-panel-width`
+restores the default. The activity panel always keeps a usable width, so two
+greedy side panels are shaved rather than allowed to squeeze it out.
+
+`+` and `-` still widen the focused panel for the moment without changing
+anything saved.
+
 ### If the layout looks wrong
 
 Almost every glyph the interface draws — the frame, `●`, `▶`, `↗`, `…` — is

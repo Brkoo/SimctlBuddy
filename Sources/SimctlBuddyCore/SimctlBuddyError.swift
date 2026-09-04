@@ -37,6 +37,7 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
   case devicectlUnavailable
   case wrongBuildForDevice(name: String, kind: DeviceKind, hint: String)
   case networkFailed(String)
+  case invalidFraction(value: String, key: String)
   case noFirebaseCredential
   case invalidServiceAccount(String)
   case firebaseAccessDenied(String)
@@ -133,6 +134,9 @@ public enum SimctlBuddyError: LocalizedError, Equatable {
         "\u{201C}\(value)\u{201D} is not a valid URL scheme. Use letters, digits, +, -, and . starting with a letter."
     case .networkFailed(let message):
       return "Could not reach Firebase: \(message)"
+    case .invalidFraction(let value, let key):
+      return
+        "\u{201C}\(value)\u{201D} is not a share of the window for \(key). Write it as a fraction like 0.45, or a percentage like 45%, between 0.1 and 0.6."
     case .noFirebaseCredential:
       return """
         No Google credential found. SimctlBuddy can use any one of these:

@@ -251,8 +251,19 @@ public struct TUIRenderer: Sendable {
       actionWidth = columns / 2
       deviceWidth = max(minimum, (columns - actionWidth) * 45 / 100)
     default:
-      deviceWidth = min(34, max(26, columns * 26 / 100))
-      actionWidth = min(40, max(30, columns * 30 / 100))
+      // A configured share is taken at its word, clamped only by what the
+      // window can actually give. Left alone, the built-in bounds keep long
+      // device names readable without starving the activity panel.
+      if let share = state.settings.devicePanelWidth {
+        deviceWidth = max(minimum, Int(Double(columns) * share))
+      } else {
+        deviceWidth = min(34, max(26, columns * 26 / 100))
+      }
+      if let share = state.settings.actionPanelWidth {
+        actionWidth = max(minimum, Int(Double(columns) * share))
+      } else {
+        actionWidth = min(40, max(30, columns * 30 / 100))
+      }
     }
 
     // Shave the widest column until the activity panel fits.

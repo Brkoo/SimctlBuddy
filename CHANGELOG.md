@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Set how much of the window the devices and actions panels take, with
+  `config set device-panel-width` and `config set action-panel-width`. Both
+  accept a fraction or a percentage, and the activity panel keeps a usable width
+  whatever is asked for
+
 ## 0.4.0 - 2026-09-03
 
 - Show the whole deep link while filling in its parameters, instead of only the

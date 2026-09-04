@@ -8,15 +8,23 @@ public struct Settings: Codable, Equatable, Sendable {
   /// Path to a Google service account key, for reading App Distribution when
   /// the machine has no gcloud or Firebase CLI signed in.
   public var firebaseServiceAccount: String?
+  /// Fraction of the window given to the devices panel, or nil for the default.
+  public var devicePanelWidth: Double?
+  /// Fraction of the window given to the actions panel, or nil for the default.
+  public var actionPanelWidth: Double?
 
   public init(
     screenshotDirectory: String? = nil,
     recordingDirectory: String? = nil,
-    firebaseServiceAccount: String? = nil
+    firebaseServiceAccount: String? = nil,
+    devicePanelWidth: Double? = nil,
+    actionPanelWidth: Double? = nil
   ) {
     self.screenshotDirectory = screenshotDirectory
     self.recordingDirectory = recordingDirectory
     self.firebaseServiceAccount = firebaseServiceAccount
+    self.devicePanelWidth = devicePanelWidth
+    self.actionPanelWidth = actionPanelWidth
   }
 
   public static let empty = Settings()
@@ -27,6 +35,16 @@ public enum SettingsKey: String, CaseIterable, Sendable {
   case screenshotDirectory = "screenshot-directory"
   case recordingDirectory = "recording-directory"
   case firebaseServiceAccount = "firebase-service-account"
+  case devicePanelWidth = "device-panel-width"
+  case actionPanelWidth = "action-panel-width"
+
+  /// True for settings that hold a fraction of the window rather than a path.
+  public var isFraction: Bool {
+    switch self {
+    case .devicePanelWidth, .actionPanelWidth: return true
+    default: return false
+    }
+  }
 
   public var summary: String {
     switch self {
@@ -34,7 +52,43 @@ public enum SettingsKey: String, CaseIterable, Sendable {
     case .recordingDirectory: return "Where `record` writes when no path is given"
     case .firebaseServiceAccount:
       return "Service account key used to read Firebase App Distribution"
+    case .devicePanelWidth:
+      return "Share of the window given to the devices panel, 0.1 to 0.6"
+    case .actionPanelWidth:
+      return "Share of the window given to the actions panel, 0.1 to 0.6"
     }
+  }
+}
+
+extension SettingsStore {
+  /// Narrower than this and a panel cannot show a name; wider and the activity
+  /// panel has nothing left once both side panels are counted.
+  public static let fractionRange: ClosedRange<Double> = 0.1...0.6
+
+  /// Reads a share of the window, written as a fraction or a percentage.
+  ///
+  /// Both `0.45` and `45%` are accepted, and so is a bare `45`: a share above
+  /// one can only have been meant as a percentage.
+  public static func fraction(from value: String, key: SettingsKey) throws -> Double {
+    var text = value.trimmingCharacters(in: .whitespaces)
+    var wasPercent = false
+    if text.hasSuffix("%") {
+      text.removeLast()
+      wasPercent = true
+      text = text.trimmingCharacters(in: .whitespaces)
+    }
+    guard let number = Double(text), number.isFinite else {
+      throw SimctlBuddyError.invalidFraction(value: value, key: key.rawValue)
+    }
+    let fraction = (wasPercent || number > 1) ? number / 100 : number
+    guard fractionRange.contains(fraction) else {
+      throw SimctlBuddyError.invalidFraction(value: value, key: key.rawValue)
+    }
+    return fraction
+  }
+
+  static func format(_ fraction: Double) -> String {
+    String(format: "%.2f", fraction)
   }
 }
 
@@ -62,6 +116,8 @@ public struct SettingsStore: Sendable {
     case .screenshotDirectory: return settings.screenshotDirectory
     case .recordingDirectory: return settings.recordingDirectory
     case .firebaseServiceAccount: return settings.firebaseServiceAccount
+    case .devicePanelWidth: return settings.devicePanelWidth.map(Self.format)
+    case .actionPanelWidth: return settings.actionPanelWidth.map(Self.format)
     }
   }
 
@@ -86,6 +142,14 @@ public struct SettingsStore: Sendable {
         throw SimctlBuddyError.missingFile(resolved)
       }
       settings.firebaseServiceAccount = resolved
+    case .devicePanelWidth:
+      let fraction = try Self.fraction(from: path, key: key)
+      settings.devicePanelWidth = fraction
+      resolved = Self.format(fraction)
+    case .actionPanelWidth:
+      let fraction = try Self.fraction(from: path, key: key)
+      settings.actionPanelWidth = fraction
+      resolved = Self.format(fraction)
     }
     try save(settings)
     return resolved
@@ -97,6 +161,8 @@ public struct SettingsStore: Sendable {
     case .screenshotDirectory: settings.screenshotDirectory = nil
     case .recordingDirectory: settings.recordingDirectory = nil
     case .firebaseServiceAccount: settings.firebaseServiceAccount = nil
+    case .devicePanelWidth: settings.devicePanelWidth = nil
+    case .actionPanelWidth: settings.actionPanelWidth = nil
     }
     try save(settings)
   }

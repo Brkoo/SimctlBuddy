@@ -614,3 +614,60 @@ final class TUIPickerTests: XCTestCase {
     XCTAssertTrue(screen.contains("Running apps first"))
   }
 }
+
+final class ConfigurablePanelWidthTests: XCTestCase {
+  private func state(device: Double?, action: Double?) -> TUIState {
+    var state = TUIState(devices: [
+      Device(
+        name: "iPhone 16 Pro Max Simulator", udid: "S1", state: "Booted", isAvailable: true)
+    ])
+    state.settings = Settings(devicePanelWidth: device, actionPanelWidth: action)
+    return state
+  }
+
+  /// Width is measured from the frame the renderer draws, not from the setting,
+  /// so this fails if the value is stored but never used.
+  private func devicePanelWidth(_ state: TUIState, columns: Int = 160) -> Int {
+    let screen = TUIRenderer().render(state: state, columns: columns, rows: 30)
+    let plain = screen.replacingOccurrences(
+      of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+    // The devices panel is the first box on the row, so its width is the offset
+    // of the second box's left edge.
+    guard
+      let line = plain.components(separatedBy: "\r\n").first(where: {
+        $0.filter { $0 == "┌" || $0 == "+" }.count >= 2
+      })
+    else { return 0 }
+    let opens = line.enumerated().filter { $0.element == "┌" || $0.element == "+" }
+    guard opens.count >= 2 else { return 0 }
+    return opens[1].offset - opens[0].offset
+  }
+
+  func testAWiderShareDrawsAWiderPanel() {
+    let narrow = devicePanelWidth(state(device: 0.2, action: 0.3))
+    let wide = devicePanelWidth(state(device: 0.45, action: 0.3))
+    XCTAssertGreaterThan(wide, narrow)
+  }
+
+  func testTheConfiguredShareIsRoughlyWhatIsDrawn() {
+    XCTAssertEqual(Double(devicePanelWidth(state(device: 0.4, action: 0.25))), 64, accuracy: 2)
+  }
+
+  /// No setting must draw exactly what it drew before the setting existed.
+  func testTheDefaultIsUnchanged() {
+    let configured = devicePanelWidth(state(device: nil, action: nil))
+    XCTAssertEqual(configured, 34)
+  }
+
+  /// The activity panel must survive two greedy side panels.
+  func testTheActivityPanelIsNeverSqueezedOut() {
+    let screen = TUIRenderer().render(
+      state: state(device: 0.6, action: 0.6), columns: 100, rows: 30)
+    XCTAssertFalse(screen.isEmpty)
+    let plain = screen.replacingOccurrences(
+      of: "\u{001B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+    // Three panels are still drawn rather than two, so nothing was starved out.
+    let row = plain.components(separatedBy: "\r\n").first { $0.contains("Devices") } ?? ""
+    XCTAssertTrue(row.contains("Actions"))
+  }
+}
